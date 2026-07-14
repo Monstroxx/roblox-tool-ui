@@ -189,10 +189,19 @@ local function GetGuiParent()
 	return game:GetService("CoreGui")
 end
 
--- Material-style ripple
+-- Material-style ripple.
+-- The circle lives inside a scale-sized holder so its growing offset size can
+-- never inflate an AutomaticSize parent (cards would visibly "pop" otherwise).
 local function Ripple(button, x, y)
 	task.spawn(function()
-		button.ClipsDescendants = true
+		local holder = Create("Frame", {
+			Name                 = "RippleHolder",
+			BackgroundTransparency = 1,
+			ClipsDescendants     = true,
+			Size                 = UDim2.fromScale(1, 1),
+			ZIndex               = 12,
+			Parent               = button,
+		})
 		local circle = Create("ImageLabel", {
 			Name                 = "Ripple",
 			Image                = ASSETS.Ripple,
@@ -201,7 +210,7 @@ local function Ripple(button, x, y)
 			BackgroundTransparency = 1,
 			ZIndex               = 12,
 			Size                 = UDim2.fromOffset(0, 0),
-			Parent               = button,
+			Parent               = holder,
 		})
 		circle.Position = UDim2.fromOffset(x - button.AbsolutePosition.X, y - button.AbsolutePosition.Y)
 		local size = math.max(button.AbsoluteSize.X, button.AbsoluteSize.Y) * 1.6
@@ -211,7 +220,7 @@ local function Ripple(button, x, y)
 			ImageTransparency = 1,
 		})
 		task.wait(0.5)
-		circle:Destroy()
+		holder:Destroy()
 	end)
 end
 
@@ -789,7 +798,7 @@ function Ember:CreateWindow(config)
 	if antiAFK == nil then antiAFK = true end
 
 	local wmaid = Maid.new()
-	local Window = { _maid = wmaid, _tabs = {} }
+	local Window = { _maid = wmaid, _tabs = {}, _flags = {} }
 
 	local gui = Create("ScreenGui", {
 		Name           = "Ember_" .. name,
@@ -982,11 +991,155 @@ function Ember:CreateWindow(config)
 	minBtn.Activated:Connect(function() setVisible(false) end)
 	reopen.Activated:Connect(function() setVisible(true) end)
 
+	--// Modal dialog (confirm/cancel). Overlay click = cancel.
+	function Window:Dialog(cfg)
+		cfg = cfg or {}
+		local dTitle   = cfg.Title   or "Confirm"
+		local dContent = cfg.Content or ""
+		local dConfirm = cfg.Confirm or "Confirm"
+		local dCancel  = cfg.Cancel  or "Cancel"
+
+		local overlay = Create("TextButton", {
+			Name             = "DialogOverlay",
+			AutoButtonColor  = false,
+			Text             = "",
+			BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+			BackgroundTransparency = 1,
+			BorderSizePixel  = 0,
+			Size             = UDim2.new(1, 0, 1, 0),
+			ZIndex           = 50,
+			Parent           = main,
+		})
+		Corner(10, overlay)
+		Tween(overlay, 0.15, { BackgroundTransparency = 0.45 })
+
+		local dialog = Create("Frame", {
+			Name             = "Dialog",
+			Active           = true, -- sink clicks so they don't fall through to the overlay (= cancel)
+			AnchorPoint      = Vector2.new(0.5, 0.5),
+			BackgroundColor3 = Theme.Surface,
+			BorderSizePixel  = 0,
+			Position         = UDim2.new(0.5, 0, 0.5, 0),
+			Size             = UDim2.fromOffset(280, 0),
+			AutomaticSize    = Enum.AutomaticSize.Y,
+			ZIndex           = 51,
+			Parent           = overlay,
+		})
+		Themed(dialog, "BackgroundColor3", "Surface")
+		Corner(8, dialog)
+		Stroke(dialog, "Stroke", 1.2, 0)
+		Create("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder, Parent = dialog })
+		Create("UIPadding", {
+			PaddingTop = UDim.new(0, 14), PaddingBottom = UDim.new(0, 14),
+			PaddingLeft = UDim.new(0, 14), PaddingRight = UDim.new(0, 14), Parent = dialog,
+		})
+
+		local dTitleLbl = Create("TextLabel", {
+			BackgroundTransparency = 1,
+			Font           = Theme.Font,
+			Text           = dTitle,
+			TextColor3     = Theme.Text,
+			TextSize       = 14,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Size           = UDim2.new(1, 0, 0, 16),
+			ZIndex         = 51,
+			LayoutOrder    = 0,
+			Parent         = dialog,
+		})
+		Themed(dTitleLbl, "TextColor3", "Text")
+
+		if dContent ~= "" then
+			local dContentLbl = Create("TextLabel", {
+				BackgroundTransparency = 1,
+				Font           = Enum.Font.Gotham,
+				Text           = dContent,
+				TextColor3     = Theme.Muted,
+				TextSize       = 12,
+				TextWrapped    = true,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextYAlignment = Enum.TextYAlignment.Top,
+				AutomaticSize  = Enum.AutomaticSize.Y,
+				Size           = UDim2.new(1, 0, 0, 12),
+				ZIndex         = 51,
+				LayoutOrder    = 1,
+				Parent         = dialog,
+			})
+			Themed(dContentLbl, "TextColor3", "Muted")
+		end
+
+		local buttonRow = Create("Frame", {
+			BackgroundTransparency = 1,
+			Size           = UDim2.new(1, 0, 0, 28),
+			ZIndex         = 51,
+			LayoutOrder    = 2,
+			Parent         = dialog,
+		})
+		Create("UIListLayout", {
+			Padding             = UDim.new(0, 8),
+			FillDirection       = Enum.FillDirection.Horizontal,
+			HorizontalAlignment = Enum.HorizontalAlignment.Right,
+			SortOrder           = Enum.SortOrder.LayoutOrder,
+			Parent              = buttonRow,
+		})
+
+		local closedD = false
+		local function closeDialog(confirmed)
+			if closedD then return end
+			closedD = true
+			Tween(overlay, 0.15, { BackgroundTransparency = 1 })
+			task.delay(0.15, function() overlay:Destroy() end)
+			if confirmed then
+				SafeCall(cfg.OnConfirm)
+			else
+				SafeCall(cfg.OnCancel)
+			end
+		end
+
+		local cancelBtn = Create("TextButton", {
+			BackgroundColor3 = Theme.Elevated,
+			Font           = Theme.Font,
+			Text           = dCancel,
+			TextColor3     = Theme.Text,
+			TextSize       = 12,
+			Size           = UDim2.fromOffset(74, 28),
+			ZIndex         = 51,
+			LayoutOrder    = 0,
+			Parent         = buttonRow,
+		})
+		Themed(cancelBtn, "BackgroundColor3", "Elevated")
+		Themed(cancelBtn, "TextColor3", "Text")
+		Corner(6, cancelBtn)
+
+		local confirmBtn = Create("TextButton", {
+			BackgroundColor3 = Theme.Accent,
+			Font           = Theme.Font,
+			Text           = dConfirm,
+			TextColor3     = Theme.Background,
+			TextSize       = 12,
+			Size           = UDim2.fromOffset(74, 28),
+			ZIndex         = 51,
+			LayoutOrder    = 1,
+			Parent         = buttonRow,
+		})
+		Themed(confirmBtn, "BackgroundColor3", "Accent")
+		Themed(confirmBtn, "TextColor3", "Background")
+		Corner(6, confirmBtn)
+
+		cancelBtn.Activated:Connect(function() closeDialog(false) end)
+		confirmBtn.Activated:Connect(function() closeDialog(true) end)
+		overlay.Activated:Connect(function() closeDialog(false) end)
+
+		return { Close = function() closeDialog(false) end }
+	end
+
 	closeBtn.Activated:Connect(function()
-		local m = Player:GetMouse()
-		Ripple(main, m.X, m.Y)
-		task.wait(0.15)
-		Window:Destroy()
+		Window:Dialog({
+			Title     = "Unload " .. name .. "?",
+			Content   = "This will close the UI and disconnect all listeners.",
+			Confirm   = "Unload",
+			Cancel    = "Cancel",
+			OnConfirm = function() Window:Destroy() end,
+		})
 	end)
 
 	-- global toggle key
@@ -1166,6 +1319,7 @@ function Ember:CreateWindow(config)
 			})
 			Themed(hTitle, "TextColor3", "Text")
 
+			-- chevron asset points DOWN at Rotation 0; closed = right (-90), open = down (0)
 			local chevron = Create("ImageLabel", {
 				BackgroundTransparency = 1,
 				Image          = ASSETS.Chevron,
@@ -1173,7 +1327,7 @@ function Ember:CreateWindow(config)
 				AnchorPoint    = Vector2.new(1, 0.5),
 				Position       = UDim2.new(1, -12, 0.5, 0),
 				Size           = UDim2.fromOffset(14, 14),
-				Rotation       = isOpen and 90 or 0,
+				Rotation       = isOpen and 0 or -90,
 				Parent         = header,
 			})
 			Themed(chevron, "ImageColor3", "Muted")
@@ -1214,7 +1368,7 @@ function Ember:CreateWindow(config)
 
 			header.Activated:Connect(function()
 				isOpen = not isOpen
-				Tween(chevron, 0.15, { Rotation = isOpen and 90 or 0 })
+				Tween(chevron, 0.15, { Rotation = isOpen and 0 or -90 })
 				refreshBody(true)
 			end)
 			task.defer(function() refreshBody(false) end)
@@ -1223,9 +1377,12 @@ function Ember:CreateWindow(config)
 			local itemCount = 0
 			local function nextOrder() local o = itemCount; itemCount += 1; return o end
 
-			-- registers flag if provided
+			-- registers flag if provided (tracked per window for cleanup on Destroy)
 			local function registerFlag(flag, obj)
-				if flag and flag ~= "" then Ember.Flags[flag] = obj end
+				if flag and flag ~= "" then
+					Ember.Flags[flag] = obj
+					table.insert(Window._flags, flag)
+				end
 			end
 
 			------------------------------------------------------------------
@@ -1250,6 +1407,7 @@ function Ember:CreateWindow(config)
 					AnchorPoint  = Vector2.new(1, 0.5),
 					Position     = UDim2.new(1, -12, 0.5, 0),
 					Size         = UDim2.fromOffset(14, 14),
+					Rotation     = -90, -- asset points down at 0; -90 = right (>)
 					Parent       = card,
 				})
 				Themed(chev, "ImageColor3", "Muted")
@@ -1310,6 +1468,7 @@ function Ember:CreateWindow(config)
 				clickLayer(card, function() obj:Set(not obj.Value) end)
 
 				visual(default)
+				SafeCall(callback, default) -- fire initial value once
 				registerFlag(flag, obj)
 				return obj
 			end
@@ -1339,22 +1498,30 @@ function Ember:CreateWindow(config)
 				card.Parent = body
 				buildTextColumn(card, title, contentT, 170)
 
-				-- value readout
-				local readout = Create("TextLabel", {
+				-- value readout (editable: type a number, or "20-80" in range mode)
+				local readout = Create("TextBox", {
 					Name             = "Readout",
 					BackgroundColor3 = Theme.Surface,
 					Font             = Theme.Font,
 					Text             = "",
 					TextColor3       = Theme.Text,
 					TextSize         = 12,
+					ClearTextOnFocus = false,
 					AnchorPoint      = Vector2.new(1, 0.5),
 					Position         = UDim2.new(1, -14, 0.5, -12),
-					Size             = UDim2.fromOffset(56, 20),
+					Size             = UDim2.fromOffset(64, 20),
 					Parent           = card,
 				})
 				Themed(readout, "BackgroundColor3", "Surface")
 				Themed(readout, "TextColor3", "Text")
 				Corner(4, readout)
+
+				-- live filter: digits, minus, dot (and separators in range mode)
+				readout:GetPropertyChangedSignal("Text"):Connect(function()
+					local allowed = isRange and "[^%d%-%.%, ]" or "[^%d%-%.]"
+					local filtered = readout.Text:gsub(allowed, "")
+					if filtered ~= readout.Text then readout.Text = filtered end
+				end)
 
 				-- track
 				local trackFrame = Create("Frame", {
@@ -1457,7 +1624,21 @@ function Ember:CreateWindow(config)
 						if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then beginDrag("hi") end
 					end)
 
+					-- typed entry: parse two numbers ("20-80", "20, 80", "20 80")
+					readout.FocusLost:Connect(function()
+						local nums = {}
+						for numStr in string.gmatch(readout.Text, "%-?%d+%.?%d*") do
+							table.insert(nums, tonumber(numStr))
+						end
+						if #nums >= 2 and nums[1] and nums[2] then
+							obj:Set({ nums[1], nums[2] })
+						else
+							redraw() -- restore valid display
+						end
+					end)
+
 					redraw()
+					SafeCall(callback, obj.Value) -- fire initial value once
 				else
 					----------------------------------------------------------
 					-- SINGLE MODE
@@ -1504,7 +1685,18 @@ function Ember:CreateWindow(config)
 						if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then beginDrag() end
 					end)
 
+					-- typed entry
+					readout.FocusLost:Connect(function()
+						local n = tonumber(readout.Text)
+						if n then
+							obj:Set(n)
+						else
+							redraw() -- restore valid display
+						end
+					end)
+
 					redraw()
+					SafeCall(callback, obj.Value) -- fire initial value once
 				end
 
 				registerFlag(flag, obj)
@@ -1522,8 +1714,18 @@ function Ember:CreateWindow(config)
 				local placeholder = c.Placeholder or "Type here..."
 				local callback = type(c.Callback) == "function" and c.Callback or nil
 				local flag     = c.Flag
+				local numeric  = c.Numeric and true or false
+				local numMin   = tonumber(c.Min)
+				local numMax   = tonumber(c.Max)
 
-				local obj = { Value = tostring(default) }
+				if numeric then
+					default = tonumber(default) or numMin or 0
+					if numMin then default = math.max(default, numMin) end
+					if numMax then default = math.min(default, numMax) end
+					placeholder = c.Placeholder or "0"
+				end
+
+				local obj = { Value = numeric and default or tostring(default) }
 				local card = buildCard(body, nextOrder(), 160)
 				card.Parent = body
 				buildTextColumn(card, title, contentT, 160)
@@ -1558,16 +1760,38 @@ function Ember:CreateWindow(config)
 				Themed(tb, "TextColor3", "Text")
 				Themed(tb, "PlaceholderColor3", "Muted")
 
-				function obj:Set(v)
-					obj.Value = tostring(v)
-					tb.Text = obj.Value
-					SafeCall(callback, obj.Value)
-				end
+				if numeric then
+					-- live filter: digits, minus, dot only
+					tb:GetPropertyChangedSignal("Text"):Connect(function()
+						local filtered = tb.Text:gsub("[^%d%-%.]", "")
+						if filtered ~= tb.Text then tb.Text = filtered end
+					end)
 
-				tb.FocusLost:Connect(function()
-					obj.Value = tb.Text
-					SafeCall(callback, obj.Value)
-				end)
+					function obj:Set(v)
+						local n = tonumber(v)
+						if n == nil then n = obj.Value end -- keep last valid
+						if numMin then n = math.max(n, numMin) end
+						if numMax then n = math.min(n, numMax) end
+						obj.Value = n
+						tb.Text = tostring(n)
+						SafeCall(callback, obj.Value)
+					end
+
+					tb.FocusLost:Connect(function()
+						obj:Set(tb.Text)
+					end)
+				else
+					function obj:Set(v)
+						obj.Value = tostring(v)
+						tb.Text = obj.Value
+						SafeCall(callback, obj.Value)
+					end
+
+					tb.FocusLost:Connect(function()
+						obj.Value = tb.Text
+						SafeCall(callback, obj.Value)
+					end)
+				end
 
 				registerFlag(flag, obj)
 				return obj
@@ -1711,6 +1935,7 @@ function Ember:CreateWindow(config)
 				Themed(selLbl, "TextColor3", "Muted")
 				Corner(4, selLbl)
 				Create("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 22), Parent = selLbl })
+				-- asset points down at 0; closed = down (0), open = up (180)
 				local arrow = Create("ImageLabel", {
 					BackgroundTransparency = 1,
 					Image        = ASSETS.Chevron,
@@ -1718,7 +1943,7 @@ function Ember:CreateWindow(config)
 					AnchorPoint  = Vector2.new(1, 0.5),
 					Position     = UDim2.new(1, -4, 0.5, 0),
 					Size         = UDim2.fromOffset(12, 12),
-					Rotation     = 90,
+					Rotation     = 0,
 					Parent       = selLbl,
 				})
 				Themed(arrow, "ImageColor3", "Muted")
@@ -1791,9 +2016,8 @@ function Ember:CreateWindow(config)
 				local expanded = false
 				local function setExpanded(v)
 					expanded = v
-					Tween(arrow, 0.15, { Rotation = v and -90 or 90 })
+					Tween(arrow, 0.15, { Rotation = v and 180 or 0 })
 					if v then
-						listWrap.Size = UDim2.new(1, 0, 0, inner.AbsoluteSize.Y)
 						Tween(listWrap, 0.18, { Size = UDim2.new(1, 0, 0, inner.AbsoluteSize.Y) })
 					else
 						Tween(listWrap, 0.18, { Size = UDim2.new(1, 0, 0, 0) })
@@ -1877,6 +2101,7 @@ function Ember:CreateWindow(config)
 						Size           = UDim2.new(1, -12, 1, 0),
 						Parent         = of,
 					})
+					Themed(ol, "TextColor3", "Text") -- rebuildVisual re-applies selected state after theme swap
 					local ob = Create("TextButton", {
 						BackgroundTransparency = 1, Text = "", Size = UDim2.new(1, 0, 1, 0), Parent = of,
 					})
@@ -1912,6 +2137,7 @@ function Ember:CreateWindow(config)
 				-- build initial
 				for _, name in ipairs(obj.Options) do obj:AddOption(name) end
 				rebuildVisual()
+				fireCallback() -- fire initial selection once
 
 				-- expose Value as getter-friendly field
 				setmetatable(obj, {
@@ -2012,8 +2238,12 @@ function Ember:CreateWindow(config)
 	function Window:Toggle() setVisible(not visible) end
 
 	function Window:Destroy()
-		-- remove this window's flagged elements from the global registry
 		wmaid:Clean()
+		-- remove this window's flagged elements from the global registry
+		for _, flag in ipairs(Window._flags) do
+			Ember.Flags[flag] = nil
+		end
+		table.clear(Window._flags)
 		for i = #Ember.Windows, 1, -1 do
 			if Ember.Windows[i] == Window then table.remove(Ember.Windows, i) end
 		end

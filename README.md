@@ -65,7 +65,9 @@ end })
 | `AntiAFK` | bool | `true` | Prevents the 20-minute idle kick |
 
 **Window methods:** `:CreateTab(cfg)`, `:CreateConfigTab(name?)`, `:Notify(cfg)`,
-`:SetTheme(nameOrTable)`, `:Toggle()`, `:Destroy()`.
+`:Dialog(cfg)`, `:SetTheme(nameOrTable)`, `:Toggle()`, `:Destroy()`.
+
+Closing via the top-bar **×** first shows a confirm dialog before unloading.
 
 ### `Window:CreateTab({ Name, Icon }) -> Tab`
 ### `Tab:AddSection({ Title, Open }) -> Section` — collapsible
@@ -82,6 +84,7 @@ and a `Callback`. Elements return an object with `:Set(value)` and a `.Value` fi
 | `AddSlider` | `Title, Content, Min, Max, Increment, Default, Flag, Callback` | `:Set(n)`, `.Value` |
 | `AddSlider` (range) | `Range = true`, `Default = {min,max}` | `:Set({min,max})`, `.Value = {min,max}` |
 | `AddInput` | `Title, Content, Default, Placeholder, Flag, Callback` | `:Set(str)`, `.Value` |
+| `AddInput` (numeric) | `Numeric = true`, optional `Min, Max` | `:Set(n)`, `.Value` is a `number` |
 | `AddDropdown` | `Title, Content, Multi, Options, Default, Flag, Callback` | see below |
 | `AddKeybind` | `Title, Content, Default(KeyCode), Flag, Callback` | `:Set(key)`, `.Value` |
 | `AddParagraph` | `Title, Content` | `:Set({Title,Content})` |
@@ -94,6 +97,14 @@ array when `Multi = true`. Includes a live search box.
 
 **Range slider** — set `Range = true` and pass `Default = {min, max}`; both handles are
 draggable and `min ≤ max` is enforced (Streamlit-style).
+
+**Slider readout is editable** — click the number box and type a value (single mode),
+or two values like `20-80` (range mode).
+
+### `Window:Dialog({ Title, Content, Confirm, Cancel, OnConfirm, OnCancel })`
+
+Modal confirm dialog inside the window. Clicking the dimmed overlay cancels.
+Returns `{ Close }`.
 
 ### `Window:Notify({ Title, Description, Content, Type, Delay })`
 

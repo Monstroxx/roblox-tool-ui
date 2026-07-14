@@ -96,6 +96,12 @@ Targets:AddInput({
 	Callback = function(v) print("[demo] whitelist =", v) end,
 })
 
+Targets:AddInput({
+	Title = "Walkspeed", Content = "Numbers only, clamped 16-500",
+	Numeric = true, Min = 16, Max = 500, Default = 16, Flag = "walkspeed",
+	Callback = function(v) print("[demo] walkspeed =", v, type(v)) end,
+})
+
 --============================================================================--
 --  Tab 2 — Visuals (decorative elements)
 --============================================================================--
