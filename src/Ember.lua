@@ -190,30 +190,37 @@ local function GetGuiParent()
 end
 
 -- Material-style ripple.
--- The circle lives inside a scale-sized holder so its growing offset size can
--- never inflate an AutomaticSize parent (cards would visibly "pop" otherwise).
+-- IMPORTANT: AutomaticSize measures the whole descendant subtree (clipping does NOT
+-- exclude it), so a growing ripple inside a card would inflate it. We therefore parent
+-- the ripple to the ScreenGui (fixed size) and overlay it at the card's absolute rect —
+-- completely outside any AutomaticSize subtree.
 local function Ripple(button, x, y)
 	task.spawn(function()
+		local root = button:FindFirstAncestorWhichIsA("ScreenGui")
+		if not root then return end
+		local absPos, absSize = button.AbsolutePosition, button.AbsoluteSize
 		local holder = Create("Frame", {
 			Name                 = "RippleHolder",
 			BackgroundTransparency = 1,
 			ClipsDescendants     = true,
-			Size                 = UDim2.fromScale(1, 1),
-			ZIndex               = 12,
-			Parent               = button,
+			Position             = UDim2.fromOffset(absPos.X, absPos.Y),
+			Size                 = UDim2.fromOffset(absSize.X, absSize.Y),
+			ZIndex               = 40,
+			Parent               = root,
 		})
+		Create("UICorner", { CornerRadius = UDim.new(0, 6), Parent = holder })
 		local circle = Create("ImageLabel", {
 			Name                 = "Ripple",
 			Image                = ASSETS.Ripple,
 			ImageColor3          = Color3.fromRGB(255, 255, 255),
 			ImageTransparency    = 0.86,
 			BackgroundTransparency = 1,
-			ZIndex               = 12,
+			ZIndex               = 40,
 			Size                 = UDim2.fromOffset(0, 0),
+			Position             = UDim2.fromOffset(x - absPos.X, y - absPos.Y),
 			Parent               = holder,
 		})
-		circle.Position = UDim2.fromOffset(x - button.AbsolutePosition.X, y - button.AbsolutePosition.Y)
-		local size = math.max(button.AbsoluteSize.X, button.AbsoluteSize.Y) * 1.6
+		local size = math.max(absSize.X, absSize.Y) * 1.6
 		Tween(circle, 0.5, {
 			Size              = UDim2.fromOffset(size, size),
 			Position          = UDim2.new(0.5, -size / 2, 0.5, -size / 2),
@@ -1935,7 +1942,7 @@ function Ember:CreateWindow(config)
 				Themed(selLbl, "TextColor3", "Muted")
 				Corner(4, selLbl)
 				Create("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 22), Parent = selLbl })
-				-- asset points down at 0; closed = down (0), open = up (180)
+				-- asset points down at 0; closed = right (-90), open = down (0)
 				local arrow = Create("ImageLabel", {
 					BackgroundTransparency = 1,
 					Image        = ASSETS.Chevron,
@@ -1943,7 +1950,7 @@ function Ember:CreateWindow(config)
 					AnchorPoint  = Vector2.new(1, 0.5),
 					Position     = UDim2.new(1, -4, 0.5, 0),
 					Size         = UDim2.fromOffset(12, 12),
-					Rotation     = 0,
+					Rotation     = -90,
 					Parent       = selLbl,
 				})
 				Themed(arrow, "ImageColor3", "Muted")
@@ -2016,7 +2023,7 @@ function Ember:CreateWindow(config)
 				local expanded = false
 				local function setExpanded(v)
 					expanded = v
-					Tween(arrow, 0.15, { Rotation = v and 180 or 0 })
+					Tween(arrow, 0.15, { Rotation = v and 0 or -90 })
 					if v then
 						Tween(listWrap, 0.18, { Size = UDim2.new(1, 0, 0, inner.AbsoluteSize.Y) })
 					else
