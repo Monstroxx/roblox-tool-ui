@@ -191,22 +191,30 @@ end
 
 -- Material-style ripple.
 -- IMPORTANT: AutomaticSize measures the whole descendant subtree (clipping does NOT
--- exclude it), so a growing ripple inside a card would inflate it. We therefore parent
--- the ripple to the ScreenGui (fixed size) and overlay it at the card's absolute rect —
--- completely outside any AutomaticSize subtree.
-local function Ripple(button, x, y)
+-- exclude it), so a growing ripple inside a card would inflate it. We overlay the ripple
+-- on a fixed-size `layer` frame (the window's EffectLayer) and position it RELATIVE to
+-- that layer — outside any AutomaticSize subtree, and inset-independent (unlike parenting
+-- to the ScreenGui with raw screen coords).
+local function Ripple(button, x, y, layer)
 	task.spawn(function()
-		local root = button:FindFirstAncestorWhichIsA("ScreenGui")
-		if not root then return end
+		local parent, origin
+		if layer then
+			parent = layer
+			origin = layer.AbsolutePosition
+		else
+			parent = button:FindFirstAncestorWhichIsA("ScreenGui")
+			if not parent then return end
+			origin = Vector2.new(0, 0)
+		end
 		local absPos, absSize = button.AbsolutePosition, button.AbsoluteSize
 		local holder = Create("Frame", {
 			Name                 = "RippleHolder",
 			BackgroundTransparency = 1,
 			ClipsDescendants     = true,
-			Position             = UDim2.fromOffset(absPos.X, absPos.Y),
+			Position             = UDim2.fromOffset(absPos.X - origin.X, absPos.Y - origin.Y),
 			Size                 = UDim2.fromOffset(absSize.X, absSize.Y),
 			ZIndex               = 40,
-			Parent               = root,
+			Parent               = parent,
 		})
 		Create("UICorner", { CornerRadius = UDim.new(0, 6), Parent = holder })
 		local circle = Create("ImageLabel", {
@@ -773,7 +781,7 @@ local function buildTextColumn(card, title, content, rightPad)
 end
 
 -- transparent full-cover click layer + ripple
-local function clickLayer(card, callback)
+local function clickLayer(card, callback, layer)
 	local btn = Create("TextButton", {
 		Name             = "Click",
 		BackgroundTransparency = 1,
@@ -784,7 +792,7 @@ local function clickLayer(card, callback)
 	})
 	btn.Activated:Connect(function()
 		local m = Player:GetMouse()
-		Ripple(card, m.X, m.Y)
+		Ripple(card, m.X, m.Y, layer)
 		if callback then callback() end
 	end)
 	return btn
@@ -830,6 +838,19 @@ function Ember:CreateWindow(config)
 	Themed(main, "BackgroundColor3", "Background")
 	Corner(10, main)
 	Stroke(main, "Stroke", 1.4, 0)
+
+	-- Fixed-size overlay for click ripples (kept out of any AutomaticSize subtree).
+	-- Active=false + transparent so it never blocks input to the controls beneath it.
+	local effectLayer = Create("Frame", {
+		Name             = "EffectLayer",
+		Active           = false,
+		BackgroundTransparency = 1,
+		Size             = UDim2.new(1, 0, 1, 0),
+		ClipsDescendants = true,
+		ZIndex           = 30,
+		Parent           = main,
+	})
+	Corner(10, effectLayer)
 
 	--// Topbar
 	local top = Create("Frame", {
@@ -1419,7 +1440,7 @@ function Ember:CreateWindow(config)
 				})
 				Themed(chev, "ImageColor3", "Muted")
 
-				clickLayer(card, function() SafeCall(callback) end)
+				clickLayer(card, function() SafeCall(callback) end, effectLayer)
 				return { Instance = card }
 			end
 
@@ -1472,7 +1493,7 @@ function Ember:CreateWindow(config)
 					SafeCall(callback, obj.Value)
 				end
 
-				clickLayer(card, function() obj:Set(not obj.Value) end)
+				clickLayer(card, function() obj:Set(not obj.Value) end, effectLayer)
 
 				visual(default)
 				SafeCall(callback, default) -- fire initial value once
@@ -1631,14 +1652,28 @@ function Ember:CreateWindow(config)
 						if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then beginDrag("hi") end
 					end)
 
-					-- typed entry: parse two numbers ("20-80", "20, 80", "20 80")
-					readout.FocusLost:Connect(function()
-						local nums = {}
-						for numStr in string.gmatch(readout.Text, "%-?%d+%.?%d*") do
-							table.insert(nums, tonumber(numStr))
+					-- Parse two numbers from "20-80", "20, 80" or "20 80".
+					-- Comma/space are tried first; a dash BETWEEN two numbers is treated as a
+					-- separator (not a minus) so ranges like "20-80" and "-10-50" both work.
+					local function parseRange(text)
+						local parts = {}
+						for p in text:gmatch("[^,%s]+") do table.insert(parts, p) end
+						if #parts == 2 then
+							local a, b = tonumber(parts[1]), tonumber(parts[2])
+							if a and b then return a, b end
 						end
-						if #nums >= 2 and nums[1] and nums[2] then
-							obj:Set({ nums[1], nums[2] })
+						local s1, s2 = text:match("^%s*(%-?%d+%.?%d*)%s*%-%s*(%-?%d+%.?%d*)%s*$")
+						if s1 and s2 then
+							local a, b = tonumber(s1), tonumber(s2)
+							if a and b then return a, b end
+						end
+						return nil
+					end
+
+					readout.FocusLost:Connect(function()
+						local a, b = parseRange(readout.Text)
+						if a and b then
+							obj:Set({ a, b })
 						else
 							redraw() -- restore valid display
 						end
