@@ -52,7 +52,7 @@ local Themes = {
 		Warning     = Color3.fromRGB(255, 176, 32),
 		Error       = Color3.fromRGB(255, 77, 77),
 		Font        = Enum.Font.GothamBold,
-		LogoId      = "83706479097157",
+		LogoId      = "rbxassetid://113927498187963",
 	},
 	Molten = {
 		Name        = "Molten",
@@ -68,7 +68,7 @@ local Themes = {
 		Warning     = Color3.fromRGB(255, 176, 32),
 		Error       = Color3.fromRGB(255, 77, 77),
 		Font        = Enum.Font.GothamBold,
-		LogoId      = "83706479097157",
+		LogoId      = "rbxassetid://113927498187963",
 	},
 	Solstice = {
 		Name        = "Solstice",
@@ -84,7 +84,7 @@ local Themes = {
 		Warning     = Color3.fromRGB(255, 176, 32),
 		Error       = Color3.fromRGB(255, 77, 77),
 		Font        = Enum.Font.GothamBold,
-		LogoId      = "83706479097157",
+		LogoId      = "rbxassetid://113927498187963",
 	},
 }
 
@@ -1285,7 +1285,7 @@ function Ember:CreateWindow(config)
 		Name             = "Reopen",
 		BackgroundColor3 = Theme.Accent,
 		Font             = Theme.Font,
-		Text             = string.sub(name, 1, 1):upper(),
+		Text             = logoId == "" and string.sub(name, 1, 1):upper() or "",
 		TextColor3       = Theme.Background,
 		TextSize         = 20,
 		Position         = UDim2.fromOffset(20, 120),
@@ -1297,6 +1297,17 @@ function Ember:CreateWindow(config)
 	Themed(reopen, "TextColor3", "Background")
 	Corner(10, reopen)
 	Stroke(reopen, "Stroke", 1, 0.3)
+	if logoId ~= "" then
+		Create("ImageLabel", {
+			Name             = "Logo",
+			BackgroundTransparency = 1,
+			Image            = logoId,
+			AnchorPoint      = Vector2.new(0.5, 0.5),
+			Position         = UDim2.new(0.5, 0, 0.5, 0),
+			Size             = UDim2.fromOffset(26, 26),
+			Parent           = reopen,
+		})
+	end
 	MakeDraggable(reopen, reopen, wmaid)
 
 	local visible = true
