@@ -34,7 +34,12 @@ end
 local Players          = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService       = game:GetService("RunService")
+local TeleportService  = game:GetService("TeleportService")
+local HttpService      = game:GetService("HttpService")
 local Player           = Players.LocalPlayer
+
+-- The exact code re-executed after teleports (auto-execute + server-hop loops)
+local AUTOEXEC_CODE = ('loadstring(game:HttpGet("%s/template.lua"))()'):format(RAW_URL)
 
 --============================================================================--
 --  Character helpers (everything must survive respawns)
@@ -197,11 +202,270 @@ Player.CharacterAdded:Connect(function(char)
 end)
 
 --============================================================================--
+--  Server Hop
+--============================================================================--
+--[[
+	Modes: "hop" (single, instant), "loop" (endless), "version" (until PlaceVersion ==
+	target), "below"/"above" (until player count < / > X).
+
+	Loop modes survive the teleport via a state file (Ember/hopstate.json) plus
+	queue_on_teleport of AUTOEXEC_CODE; ServerHop.resume() picks the loop back up
+	after the script re-executes on the new server.
+]]
+local ServerHop = {}
+do
+	local STATE_FILE = "Ember/hopstate.json"
+	local cancelled  = false -- session-local; cross-server cancel works via clearState
+
+	local MODE_TEXT = {
+		hop     = "random server",
+		loop    = "endless loop",
+		version = "until place version",
+		below   = "until players below X",
+		above   = "until players above X",
+	}
+
+	local function saveState(state)
+		local write = Ember.Compat:Get("writefile")
+		if not write then return false end
+		return pcall(write, STATE_FILE, HttpService:JSONEncode(state))
+	end
+
+	local function loadState()
+		local isfile, read = Ember.Compat:Get("isfile"), Ember.Compat:Get("readfile")
+		if not (isfile and read) then return nil end
+		local ok, json = pcall(function()
+			return isfile(STATE_FILE) and read(STATE_FILE) or nil
+		end)
+		if not ok or type(json) ~= "string" then return nil end
+		local ok2, data = pcall(function() return HttpService:JSONDecode(json) end)
+		if ok2 and type(data) == "table" then return data end
+		return nil
+	end
+
+	local function clearState()
+		local isfile, del = Ember.Compat:Get("isfile"), Ember.Compat:Get("delfile")
+		if isfile and del then
+			pcall(function() if isfile(STATE_FILE) then del(STATE_FILE) end end)
+		end
+	end
+
+	-- One page (100) of public servers from the games API.
+	local function fetchServers(sortOrder)
+		local url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=%s&excludeFullGames=true&limit=100")
+			:format(game.PlaceId, sortOrder)
+		local ok, res = pcall(function() return game:HttpGet(url) end)
+		if not ok then return nil, "servers request failed: " .. tostring(res) end
+		local ok2, data = pcall(function() return HttpService:JSONDecode(res) end)
+		if not ok2 or type(data) ~= "table" or type(data.data) ~= "table" then
+			return nil, "unexpected servers response"
+		end
+		return data.data
+	end
+
+	-- Random joinable server matching the mode ("below"/"above" filter by player count).
+	local function pickServer(mode, x)
+		-- Asc = emptiest first, so the below-filter sees usable candidates on page 1.
+		local servers, err = fetchServers(mode == "below" and "Asc" or "Desc")
+		if not servers then return nil, err end
+		local candidates = {}
+		for _, s in ipairs(servers) do
+			if type(s) == "table" and s.id and s.id ~= game.JobId
+				and type(s.playing) == "number" and type(s.maxPlayers) == "number"
+				and s.playing < s.maxPlayers then
+				local matches = true
+				if mode == "below" then matches = s.playing < x
+				elseif mode == "above" then matches = s.playing > x end
+				if matches then table.insert(candidates, s) end
+			end
+		end
+		if #candidates == 0 then return nil, "no matching server found" end
+		return candidates[math.random(#candidates)]
+	end
+
+	function ServerHop.cancel()
+		cancelled = true
+		clearState()
+		-- Our hop queue and auto-execute share AUTOEXEC_CODE; re-queue in case that
+		-- feature is enabled (no-op otherwise).
+		Ember.AutoExecute:_queue()
+		Window:Notify({ Title = "Server hop", Description = "Cancelled", Type = "Warning" })
+	end
+
+	-- Find a server and teleport; retries with cooldown until cancelled.
+	local function hopNext(state)
+		task.spawn(function()
+			while not cancelled do
+				local server, err = pickServer(state.mode, state.x)
+				if cancelled then return end
+				if server then
+					if state.mode ~= "hop" then
+						saveState(state)
+						local queue = Ember.Compat:Get("queue_on_teleport")
+						if queue then pcall(queue, AUTOEXEC_CODE) end
+					end
+					local ok = pcall(function()
+						TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id, Player)
+					end)
+					if ok then return end -- teleport is underway
+					err = "teleport failed"
+				end
+				Window:Notify({
+					Title = "Server hop", Description = "Retrying",
+					Content = ("%s — next try in %ds"):format(tostring(err), state.cooldown),
+					Type = "Warning", Delay = state.cooldown,
+					Buttons = { { Text = "Cancel", Callback = ServerHop.cancel } },
+				})
+				task.wait(state.cooldown)
+			end
+		end)
+	end
+
+	-- state = { mode, x?, target?, cooldown }
+	function ServerHop.start(state)
+		if state.mode ~= "hop" then
+			if not Ember.Compat:FSOk() then
+				Window:Notify({ Title = "Server hop", Description = "Unavailable",
+					Content = "Loop modes need a working filesystem API.", Type = "Warning" })
+				return
+			end
+			if not Ember.Compat:Get("queue_on_teleport") then
+				Window:Notify({ Title = "Server hop", Description = "Unavailable",
+					Content = "Loop modes need queue_on_teleport.", Type = "Warning" })
+				return
+			end
+		end
+		cancelled = false
+		Window:Notify({
+			Title = "Server hop", Description = "Starting",
+			Content = "Mode: " .. (MODE_TEXT[state.mode] or state.mode),
+			Type = "Info", Delay = 8,
+			Buttons = { { Text = "Cancel", Callback = ServerHop.cancel } },
+		})
+		hopNext(state)
+	end
+
+	-- Called once on startup (after flags are restored): continue or finish a loop.
+	function ServerHop.resume()
+		local state = loadState()
+		if not state or not MODE_TEXT[tostring(state.mode)] then return end
+		state.cooldown = tonumber(state.cooldown) or 5
+		state.x        = tonumber(state.x) or 0
+
+		task.spawn(function()
+			local done, doneText = false, ""
+			if state.mode == "version" then
+				done = (game.PlaceVersion == tonumber(state.target))
+				doneText = "Landed on place version " .. tostring(game.PlaceVersion)
+			elseif state.mode == "below" or state.mode == "above" then
+				task.wait(3) -- let players stream in before counting
+				local count = #Players:GetPlayers()
+				done = (state.mode == "below" and count < state.x)
+					or (state.mode == "above" and count > state.x)
+				doneText = ("Server has %d players"):format(count)
+			end
+			-- mode "loop" is never done; it hops until cancelled
+
+			if done then
+				clearState()
+				Ember.AutoExecute:_queue()
+				Window:Notify({
+					Title = "Server hop", Description = "Finished",
+					Content = doneText, Type = "Success", Delay = 10,
+				})
+				return
+			end
+
+			Window:Notify({
+				Title = "Server hop", Description = "Continuing",
+				Content = ("Mode: %s — next hop in %ds"):format(MODE_TEXT[state.mode], state.cooldown),
+				Type = "Info", Delay = state.cooldown,
+				Buttons = { { Text = "Cancel", Callback = ServerHop.cancel } },
+			})
+			task.wait(state.cooldown)
+			if not cancelled then hopNext(state) end
+		end)
+	end
+end
+
+local Server  = Window:CreateTab({ Name = "Server" })
+local HopSec  = Server:AddSection({ Title = "Server Hop", Open = true })
+
+HopSec:AddParagraph({
+	Title   = "This server",
+	Content = ("Place version %d — %d players"):format(game.PlaceVersion, #Players:GetPlayers()),
+})
+
+local hopCooldown = HopSec:AddSlider({
+	Title = "Cooldown", Content = "Seconds between hops (loop modes)",
+	Min = 3, Max = 60, Increment = 1, Default = 5, Flag = "hop_cooldown",
+})
+
+HopSec:AddButton({
+	Title = "Hop server", Content = "Teleport to a random other server",
+	Callback = function()
+		ServerHop.start({ mode = "hop", cooldown = hopCooldown.Value })
+	end,
+})
+
+HopSec:AddButton({
+	Title = "Hop loop (endless)", Content = "Keep hopping after every join until cancelled",
+	Callback = function()
+		ServerHop.start({ mode = "loop", cooldown = hopCooldown.Value })
+	end,
+})
+
+local hopVersion = HopSec:AddInput({
+	Title = "Target version", Content = "Place version to hunt for",
+	Placeholder = tostring(game.PlaceVersion), Default = "", Flag = "hop_version",
+})
+
+HopSec:AddButton({
+	Title = "Hop until version", Content = "Hop until the server runs the target version",
+	Callback = function()
+		local target = tonumber(hopVersion.Value)
+		if not target then
+			Window:Notify({ Title = "Server hop", Description = "Invalid version",
+				Content = "Enter a numeric place version first.", Type = "Warning" })
+			return
+		end
+		if target == game.PlaceVersion then
+			Window:Notify({ Title = "Server hop", Description = "Already there",
+				Content = "This server already runs version " .. tostring(target), Type = "Success" })
+			return
+		end
+		ServerHop.start({ mode = "version", target = target, cooldown = hopCooldown.Value })
+	end,
+})
+
+local hopPlayers = HopSec:AddSlider({
+	Title = "Player threshold X", Content = "For the player-count modes below",
+	Min = 1, Max = 100, Increment = 1, Default = 5, Flag = "hop_players",
+})
+
+HopSec:AddButton({
+	Title = "Hop until players < X", Content = "Find a server with fewer than X players",
+	Callback = function()
+		ServerHop.start({ mode = "below", x = hopPlayers.Value, cooldown = hopCooldown.Value })
+	end,
+})
+
+HopSec:AddButton({
+	Title = "Hop until players > X", Content = "Find a server with more than X players",
+	Callback = function()
+		ServerHop.start({ mode = "above", x = hopPlayers.Value, cooldown = hopCooldown.Value })
+	end,
+})
+
+HopSec:AddButton({
+	Title = "Stop hopping", Content = "Cancel any running hop loop",
+	Callback = ServerHop.cancel,
+})
+
+--============================================================================--
 --  Settings (config + theme + session extras + diagnostics)
 --============================================================================--
-Ember.AutoExecute:Configure({
-	Code = ('loadstring(game:HttpGet("%s/template.lua"))()'):format(RAW_URL),
-})
+Ember.AutoExecute:Configure({ Code = AUTOEXEC_CODE })
 
 Window:CreateConfigTab({
 	Name        = "Settings",
@@ -221,3 +485,6 @@ else
 		Content = "Press RightShift to toggle the UI.", Type = "Info", Delay = 6,
 	})
 end
+
+--// Continue (or finish) a server-hop loop that carried over from the previous server.
+ServerHop.resume()
