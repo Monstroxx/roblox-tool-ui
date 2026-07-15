@@ -219,7 +219,6 @@ local Farm = {
 	SellEggs      = false,
 	SellMultMin   = 0.5,
 	SellMultMax   = 3.0,
-	SellOnFrenzy  = false,
 	BuyChicken    = false,
 	CashReserve   = 1000,
 	Merge         = false,
@@ -313,10 +312,14 @@ local function isEggFrenzyActive()
 	return (eggFrenzy and eggFrenzy.Visible) and true or false
 end
 
--- The real egg multiplier (0.5x - 3.0x) is only announced every ~30s via a notification
--- ("Egg Multiplier rose/dropped to X.XXx!"), which is visible for a moment. Cache the
--- last announced value.
-local CachedEggMultiplier = 1
+-- The egg multiplier (0.5x - 3.0x) has no HUD label anywhere; it is only announced every
+-- ~30s via a short-lived notification. Verified in-game — the exact wording is
+-- "Egg Multiplier rose to 1.5x!" / "Egg Multiplier dropped to 1.45x!" in a Holder child
+-- named "Notification". So cache the last announced value.
+--
+-- nil = not announced yet. Deliberately not defaulted to 1: a made-up value sits inside
+-- the default range and would sell at an unknown real multiplier for the first ~30s.
+local CachedEggMultiplier = nil
 
 local function parseEggMultiplierText(text)
 	local value = text:match("to%s+([%d%.]+)x")
@@ -511,12 +514,13 @@ local function buyChicken()
 	return standOnPart(part, 0.3)
 end
 
+-- Sell only when the multiplier is known AND inside the range. Until the first
+-- announcement arrives the multiplier is nil, and we hold rather than guess.
 local function shouldSellEggs()
-	if Farm.SellOnFrenzy and not isEggFrenzyActive() then
+	local multiplier = getEggMultiplier()
+	if not multiplier then
 		return false
 	end
-
-	local multiplier = getEggMultiplier()
 	return multiplier >= Farm.SellMultMin and multiplier <= Farm.SellMultMax
 end
 
@@ -562,17 +566,11 @@ Sell:AddToggle({
 })
 
 Sell:AddSlider({
-	Title = "Multiplier range", Content = "Only sell while the egg multiplier is in range",
+	Title = "Multiplier range", Content = "Holds until the multiplier is announced and in range",
 	Range = true, Min = 0.5, Max = 3, Increment = 0.05, Default = { 0.5, 3 }, Flag = "cf_mult",
 	Callback = function(v)
 		Farm.SellMultMin, Farm.SellMultMax = v[1], v[2]
 	end,
-})
-
-Sell:AddToggle({
-	Title = "Only during Egg Frenzy", Content = "Additionally require the frenzy event",
-	Default = false, Flag = "cf_frenzy",
-	Callback = function(v) Farm.SellOnFrenzy = v end,
 })
 
 local Chickens = FarmTab:AddSection({ Title = "Chickens", Open = true })
@@ -634,12 +632,13 @@ task.spawn(function()
 		-- The readout only needs to be human-readable, not per-frame.
 		if os.clock() - lastStatus >= 1 then
 			lastStatus = os.clock()
+			local mult = getEggMultiplier()
 			StatusText:Set({
 				Title = active > 0 and ("%d automation(s) running"):format(active) or "Idle",
-				Content = ("Cash: %s  |  Eggs: %s  |  Multiplier: x%s%s"):format(
+				Content = ("Cash: %s  |  Eggs: %s  |  Multiplier: %s%s"):format(
 					formatCurrency(getCashAmount()),
 					formatCurrency(getEggCount()),
-					tostring(getEggMultiplier()),
+					mult and ("x" .. tostring(mult)) or "waiting for announcement",
 					isEggFrenzyActive() and "  |  Egg Frenzy!" or ""
 				),
 			})
