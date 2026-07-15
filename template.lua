@@ -462,6 +462,58 @@ HopSec:AddButton({
 	Callback = ServerHop.cancel,
 })
 
+local NavSec = Server:AddSection({ Title = "Teleport", Open = true })
+
+NavSec:AddButton({
+	Title = "Rejoin server", Content = "Reconnect to this exact server",
+	Callback = function()
+		Window:Notify({
+			Title = "Teleport", Description = "Rejoining",
+			Content = "Reconnecting...", Type = "Info",
+		})
+		local ok, err = pcall(function()
+			-- JobId is empty in solo/reserved servers; plain Teleport still rejoins the place.
+			if game.JobId == "" then
+				TeleportService:Teleport(game.PlaceId, Player)
+			else
+				TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, Player)
+			end
+		end)
+		if not ok then
+			Window:Notify({ Title = "Teleport", Description = "Error", Content = tostring(err), Type = "Error" })
+		end
+	end,
+})
+
+local joinPlaceInput = NavSec:AddInput({
+	Title = "Place ID", Content = "Target place to join",
+	Placeholder = tostring(game.PlaceId), Default = "", Flag = "join_placeid",
+})
+
+NavSec:AddButton({
+	Title = "Join place", Content = "Teleport to the entered place ID",
+	Callback = function()
+		local id = tonumber(joinPlaceInput.Value)
+		if not id then
+			Window:Notify({
+				Title = "Teleport", Description = "Invalid place ID",
+				Content = "Enter a numeric place ID first.", Type = "Warning",
+			})
+			return
+		end
+		Window:Notify({
+			Title = "Teleport", Description = "Joining",
+			Content = "Place " .. tostring(id), Type = "Info",
+		})
+		local ok, err = pcall(function()
+			TeleportService:Teleport(id, Player)
+		end)
+		if not ok then
+			Window:Notify({ Title = "Teleport", Description = "Error", Content = tostring(err), Type = "Error" })
+		end
+	end,
+})
+
 --============================================================================--
 --  Settings (config + theme + session extras + diagnostics)
 --============================================================================--
