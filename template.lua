@@ -211,10 +211,13 @@ Window:CreateConfigTab({
 	Diagnostics = true,
 })
 
---// Load the autoload config (if one was set) after the UI exists
-Ember.SaveManager:LoadAutoload()
-
-Window:Notify({
-	Title = HUB_NAME, Description = "Loaded",
-	Content = "Press RightShift to toggle the UI.", Type = "Info", Delay = 6,
-})
+--// Restore the last session and start tracking changes.
+--   Must run AFTER every tab/element exists, otherwise later flags miss the restore.
+if Ember.SaveManager:StartAutoSave() then
+	Window:NotifyConfigLoaded("Your last settings")
+else
+	Window:Notify({
+		Title = HUB_NAME, Description = "Loaded",
+		Content = "Press RightShift to toggle the UI.", Type = "Info", Delay = 6,
+	})
+end

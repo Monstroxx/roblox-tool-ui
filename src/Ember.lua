@@ -543,6 +543,22 @@ local SaveManager = {}
 SaveManager.Folder  = "Ember"
 SaveManager._memory = {}   -- name -> json (Studio / no-FS fallback)
 
+-- Reserved config that mirrors the live state. Hidden from :List() so it never shows
+-- up next to the user's hand-made presets.
+SaveManager.AutoName      = "__auto"
+SaveManager.AutoSaveDelay = 1        -- seconds of quiet before a write
+SaveManager._autoSaveOn   = false
+SaveManager._saveToken    = 0
+
+-- Shallow copy so table-valued flags (multi-dropdown, range slider) can't be mutated
+-- through a stored default.
+local function cloneValue(v)
+	if type(v) ~= "table" then return v end
+	local t = {}
+	for k, val in pairs(v) do t[k] = val end
+	return t
+end
+
 local function ensureFolders()
 	if not hasFS() or not fs.makefolder then return end
 	for _, p in ipairs({ SaveManager.Folder, SaveManager.Folder .. "/configs", SaveManager.Folder .. "/themes" }) do
@@ -632,14 +648,54 @@ function SaveManager:List()
 		if ok and files then
 			for _, f in ipairs(files) do
 				local n = tostring(f):match("([^/\\]+)%.json$")
-				if n and n ~= "autoload" then table.insert(names, n) end
+				if n and n ~= "autoload" and n ~= SaveManager.AutoName then
+					table.insert(names, n)
+				end
 			end
 		end
 	else
-		for n in pairs(self._memory) do table.insert(names, n) end
+		for n in pairs(self._memory) do
+			if n ~= "__autoload" and n ~= SaveManager.AutoName then table.insert(names, n) end
+		end
 	end
 	table.sort(names)
 	return names
+end
+
+-- Debounced write of the live state into the reserved auto config. Called from every
+-- element's :Set (wired up in registerFlag), so a slider drag coalesces into one write.
+function SaveManager:_queueAutoSave()
+	if not self._autoSaveOn then return end
+	self._saveToken += 1
+	local token = self._saveToken
+	task.delay(self.AutoSaveDelay, function()
+		if token ~= self._saveToken or not self._autoSaveOn then return end
+		self:Save(self.AutoName)
+	end)
+end
+
+-- Put every registered flag back to the value it had when its element was built.
+function SaveManager:ResetDefaults()
+	for _, element in pairs(Ember.Flags) do
+		if element.Default ~= nil and type(element.Set) == "function" then
+			pcall(function() element:Set(cloneValue(element.Default)) end)
+		end
+	end
+	-- Drop the persisted copy too, so this also resets a fresh launch when auto-save is off.
+	self:Delete(self.AutoName)
+	return true
+end
+
+-- Restore the last state, then start tracking changes. Call this AFTER every tab and
+-- element exists, otherwise later flags miss the restore.
+function SaveManager:StartAutoSave()
+	local loaded = self:Load(self.AutoName)
+	self._autoSaveOn = true
+	return loaded
+end
+
+function SaveManager:StopAutoSave()
+	self._autoSaveOn = false
 end
 
 function SaveManager:SetAutoload(name)
@@ -912,6 +968,7 @@ function Ember:Notify(config)
 	local ntype   = config.Type         or "Info"
 	local delay   = tonumber(config.Delay or config.Time) or 5
 	local accentKey = TYPE_COLOR[ntype] or "Accent"
+	local close -- forward declaration: action buttons dismiss the card
 
 	local card = Create("CanvasGroup", {
 		Name             = "Notification",
@@ -992,6 +1049,42 @@ function Ember:Notify(config)
 		Themed(contentLbl, "TextColor3", "Muted")
 	end
 
+	--// Optional action buttons: { { Text = "Reset", Callback = fn }, ... }
+	local actions = config.Buttons or config.Actions
+	if type(actions) == "table" and #actions > 0 then
+		local row = Create("Frame", {
+			BackgroundTransparency = 1,
+			Size          = UDim2.new(1, 0, 0, 26),
+			LayoutOrder   = 4,
+			Parent        = col,
+		})
+		Create("UIListLayout", {
+			Padding       = UDim.new(0, 6),
+			FillDirection = Enum.FillDirection.Horizontal,
+			SortOrder     = Enum.SortOrder.LayoutOrder,
+			Parent        = row,
+		})
+		for i, a in ipairs(actions) do
+			local actionBtn = Create("TextButton", {
+				BackgroundColor3 = Theme.Elevated,
+				Font          = Theme.Font,
+				Text          = a.Text or a[1] or "Action",
+				TextColor3    = Theme.Text,
+				TextSize      = 11,
+				Size          = UDim2.fromOffset(100, 24),
+				LayoutOrder   = i,
+				Parent        = row,
+			})
+			Themed(actionBtn, "BackgroundColor3", "Elevated")
+			Themed(actionBtn, "TextColor3", "Text")
+			Corner(6, actionBtn)
+			actionBtn.Activated:Connect(function()
+				SafeCall(a.Callback or a[2])
+				close()
+			end)
+		end
+	end
+
 	local closeBtn = Create("TextButton", {
 		BackgroundTransparency = 1,
 		Font          = Theme.Font,
@@ -1006,7 +1099,7 @@ function Ember:Notify(config)
 	Themed(closeBtn, "TextColor3", "Muted")
 
 	local closed = false
-	local function close()
+	function close()
 		if closed then return end
 		closed = true
 		local t = Tween(card, 0.25, { GroupTransparency = 1 })
@@ -1735,6 +1828,18 @@ function Ember:CreateWindow(config)
 				if flag and flag ~= "" then
 					Ember.Flags[flag] = obj
 					table.insert(Window._flags, flag)
+
+					-- Nothing has been loaded at registration time, so the current value IS
+					-- the element's default — remember it for SaveManager:ResetDefaults().
+					obj.Default = cloneValue(obj.Value)
+
+					-- Every element mutates through :Set, so wrapping it here is the single
+					-- place that sees all value changes.
+					local rawSet = obj.Set
+					obj.Set = function(...)
+						rawSet(...)
+						SaveManager:_queueAutoSave()
+					end
 				end
 			end
 
@@ -2601,6 +2706,15 @@ function Ember:CreateWindow(config)
 	--  Window-level helpers
 	--========================================================================--
 	function Window:Notify(cfg) return Ember:Notify(cfg) end
+
+	-- "Config loaded" toast carrying a Reset-config action. CreateConfigTab installs the
+	-- real handler (it owns the reset logic); without a config tab we degrade to a plain toast.
+	function Window:NotifyConfigLoaded(name)
+		if self._notifyConfigLoaded then return self._notifyConfigLoaded(name) end
+		return Ember:Notify({
+			Title = "Config", Description = "Loaded", Content = name or "", Type = "Success",
+		})
+	end
 	function Window:SetTheme(t) return Ember:SetTheme(t) end
 	function Window:Toggle() setVisible(not visible) end
 
@@ -2633,6 +2747,24 @@ function Ember:CreateWindow(config)
 			listDrop:Refresh(SaveManager:List(), listDrop.Value)
 		end
 
+		local function resetConfig()
+			SaveManager:ResetDefaults()
+			Ember:Notify({
+				Title = "Config", Description = "Reset",
+				Content = "All settings are back to their defaults.", Type = "Warning",
+			})
+		end
+
+		-- Reusable "Config loaded" toast with a one-click undo back to defaults.
+		local function notifyLoaded(name)
+			Ember:Notify({
+				Title = "Config", Description = "Loaded", Content = name,
+				Type = "Success", Delay = 10,
+				Buttons = { { Text = "Reset config", Callback = resetConfig } },
+			})
+		end
+		Window._notifyConfigLoaded = notifyLoaded
+
 		cfgSection:AddButton({ Title = "Save", Content = "Write current values to a config", Callback = function()
 			local n = nameInput.Value
 			if n == "" then n = "default" end
@@ -2645,7 +2777,21 @@ function Ember:CreateWindow(config)
 			local n = listDrop.Value or nameInput.Value
 			if not n or n == "" then return end
 			local ok, err = SaveManager:Load(n)
-			Ember:Notify({ Title = "Config", Description = ok and "Loaded" or "Error", Content = ok and n or tostring(err), Type = ok and "Success" or "Error" })
+			if ok then
+				notifyLoaded(n)
+			else
+				Ember:Notify({ Title = "Config", Description = "Error", Content = tostring(err), Type = "Error" })
+			end
+		end })
+
+		cfgSection:AddButton({ Title = "Reset config", Content = "Put every setting back to its default", Callback = function()
+			Window:Dialog({
+				Title     = "Reset all settings?",
+				Content   = "Every toggle, slider and dropdown goes back to its default, and the saved auto config is discarded.",
+				Confirm   = "Reset",
+				Cancel    = "Cancel",
+				OnConfirm = resetConfig,
+			})
 		end })
 
 		cfgSection:AddButton({ Title = "Delete", Content = "Delete the selected config", Callback = function()
@@ -2654,13 +2800,6 @@ function Ember:CreateWindow(config)
 			SaveManager:Delete(n)
 			refreshList()
 			Ember:Notify({ Title = "Config", Description = "Deleted", Content = n, Type = "Warning" })
-		end })
-
-		cfgSection:AddButton({ Title = "Set autoload", Content = "Load selected config on next launch", Callback = function()
-			local n = listDrop.Value
-			if not n or n == "" then return end
-			SaveManager:SetAutoload(n)
-			Ember:Notify({ Title = "Config", Description = "Autoload set", Content = n, Type = "Success" })
 		end })
 
 		local themeSection = tab:AddSection({ Title = "Theme", Open = true })
