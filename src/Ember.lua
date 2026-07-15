@@ -52,7 +52,7 @@ local Themes = {
 		Warning     = Color3.fromRGB(255, 176, 32),
 		Error       = Color3.fromRGB(255, 77, 77),
 		Font        = Enum.Font.GothamBold,
-		LogoId      = "",
+		LogoId      = "83706479097157",
 	},
 	Molten = {
 		Name        = "Molten",
@@ -68,7 +68,7 @@ local Themes = {
 		Warning     = Color3.fromRGB(255, 176, 32),
 		Error       = Color3.fromRGB(255, 77, 77),
 		Font        = Enum.Font.GothamBold,
-		LogoId      = "",
+		LogoId      = "83706479097157",
 	},
 	Solstice = {
 		Name        = "Solstice",
@@ -84,7 +84,7 @@ local Themes = {
 		Warning     = Color3.fromRGB(255, 176, 32),
 		Error       = Color3.fromRGB(255, 77, 77),
 		Font        = Enum.Font.GothamBold,
-		LogoId      = "",
+		LogoId      = "83706479097157",
 	},
 }
 
