@@ -804,15 +804,26 @@ function AntiAFK:Disable() return self:SetEnabled(false) end
 Ember.AntiAFK = AntiAFK
 
 --// Auto-Execute — re-run the script after a teleport / server hop.
--- Needs `queue_on_teleport`. Rather than queuing once up-front (fragile: some executors
--- drop a queue that sits around), we queue at the exact moment a teleport STARTS, via
--- LocalPlayer.OnTeleport — the pattern the executors themselves document.
+-- Needs `queue_on_teleport`. Executors differ in when the queue must be filled, so we
+-- queue on EVERY path (re-queuing is idempotent — the last call wins):
+--   1. immediately on enable       (UNC behavior: the queue persists until the teleport)
+--   2. on OnTeleport "Started"     (Synapse pattern: queue right as the teleport begins)
+--   3. before each rejoin attempt  (after a disconnect OnTeleport may no longer fire)
 local AutoExecute = { Enabled = false, Code = nil, _conn = nil }
 
 function AutoExecute:Configure(cfg)
 	cfg = cfg or {}
 	self.Code = cfg.Code or self.Code
 	return self.Code ~= nil
+end
+
+-- (Re-)fill the executor's teleport queue with the configured code.
+function AutoExecute:_queue()
+	if not self.Enabled then return end
+	local queue = Compat:Get("queue_on_teleport")
+	if queue and self.Code and self.Code ~= "" then
+		pcall(queue, self.Code)
+	end
 end
 
 function AutoExecute:SetEnabled(on)
@@ -828,10 +839,11 @@ function AutoExecute:SetEnabled(on)
 			self.Enabled = false
 			return false, "no code configured (call Ember.AutoExecute:Configure{ Code = ... })"
 		end
-		-- Queue the code the instant a teleport begins.
+		self.Enabled = true
+		self:_queue()
 		self._conn = Player.OnTeleport:Connect(function(state)
 			if state == Enum.TeleportState.Started then
-				pcall(queue, self.Code)
+				self:_queue()
 			end
 		end)
 	else
@@ -859,6 +871,9 @@ function AutoRejoin:_rejoin()
 	local placeId = game.PlaceId
 	task.spawn(function()
 		while self.Enabled do
+			-- After a disconnect OnTeleport may no longer fire, so refill the auto-execute
+			-- queue right before every attempt — this teleport is what carries it over.
+			AutoExecute:_queue()
 			pcall(function() TeleportService:Teleport(placeId, Player) end)
 			task.wait(5)
 		end
