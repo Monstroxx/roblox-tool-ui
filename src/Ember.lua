@@ -272,6 +272,7 @@ local COMPAT_NAMES = {
 	"isfolder", "makefolder", "listfiles",
 	"setclipboard", "gethui", "cloneref",
 	"queue_on_teleport", "identifyexecutor",
+	"firetouchinterest",
 }
 
 -- Alias candidates per canonical name, in priority order:
@@ -320,6 +321,8 @@ pcall(function()
 	NATIVE.cloneref          = cloneref
 	NATIVE.queue_on_teleport = queue_on_teleport
 	NATIVE.identifyexecutor  = identifyexecutor
+	-- sUNC: firetouchinterest(part1, part2, toggle) — 0/true begins, 1/false ends the touch.
+	NATIVE.firetouchinterest = firetouchinterest
 end)
 
 -- Fill remaining gaps from an environment table, walking the alias candidates in order.
@@ -477,7 +480,7 @@ function Compat:Validate()
 	end
 
 	-- not testable without side effects: only report presence
-	for _, n in ipairs({ "setclipboard", "queue_on_teleport" }) do
+	for _, n in ipairs({ "setclipboard", "queue_on_teleport", "firetouchinterest" }) do
 		setStatus(n, type(NATIVE[n]) == "function" and "present" or "missing",
 			type(NATIVE[n]) == "function" and nativeSource(n) or "none")
 	end
