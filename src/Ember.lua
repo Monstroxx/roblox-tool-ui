@@ -230,6 +230,12 @@ pcall(function()
 	NATIVE.queue_on_teleport = queue_on_teleport
 	NATIVE.identifyexecutor  = identifyexecutor or getexecutorname
 end)
+-- Some executors only expose queue_on_teleport under a namespace (e.g. syn.queue_on_teleport).
+pcall(function()
+	if NATIVE.queue_on_teleport == nil and type(syn) == "table" and type(syn.queue_on_teleport) == "function" then
+		NATIVE.queue_on_teleport = syn.queue_on_teleport
+	end
+end)
 pcall(function()
 	if type(getgenv) == "function" then
 		local g = getgenv()
@@ -696,8 +702,10 @@ function AntiAFK:Disable() return self:SetEnabled(false) end
 Ember.AntiAFK = AntiAFK
 
 --// Auto-Execute — re-run the script after a teleport / server hop.
--- Needs `queue_on_teleport`, which cannot be tested without an actual teleport.
-local AutoExecute = { Enabled = false, Code = nil }
+-- Needs `queue_on_teleport`. Rather than queuing once up-front (fragile: some executors
+-- drop a queue that sits around), we queue at the exact moment a teleport STARTS, via
+-- LocalPlayer.OnTeleport — the pattern the executors themselves document.
+local AutoExecute = { Enabled = false, Code = nil, _conn = nil }
 
 function AutoExecute:Configure(cfg)
 	cfg = cfg or {}
@@ -707,22 +715,28 @@ end
 
 function AutoExecute:SetEnabled(on)
 	on = on and true or false
+	if on == self.Enabled then return self.Enabled end
 	local queue = Compat:Get("queue_on_teleport")
 	if on then
 		if not queue then
 			self.Enabled = false
-			return false, "unsupported"
+			return false, "unsupported (no queue_on_teleport)"
 		end
 		if not self.Code or self.Code == "" then
 			self.Enabled = false
 			return false, "no code configured (call Ember.AutoExecute:Configure{ Code = ... })"
 		end
-		local ok, err = pcall(queue, self.Code)
-		if not ok then
-			self.Enabled = false
-			return false, tostring(err)
-		end
+		-- Queue the code the instant a teleport begins.
+		self._conn = Player.OnTeleport:Connect(function(state)
+			if state == Enum.TeleportState.Started then
+				pcall(queue, self.Code)
+			end
+		end)
 	else
+		if self._conn then
+			self._conn:Disconnect()
+			self._conn = nil
+		end
 		-- queue_on_teleport has no "unqueue"; an empty queue is the standard reset.
 		if queue then pcall(queue, "") end
 	end
@@ -732,7 +746,23 @@ end
 Ember.AutoExecute = AutoExecute
 
 --// Auto-Rejoin — rejoin the place when Roblox shows a disconnect/error prompt.
-local AutoRejoin = { Enabled = false, _conn = nil }
+local AutoRejoin = { Enabled = false, _conn = nil, _busy = false }
+
+-- Teleport tends to no-op the first time right after a disconnect, so we retry in a
+-- loop until it actually takes us out of the dead server.
+function AutoRejoin:_rejoin()
+	if self._busy then return end
+	self._busy = true
+	local TeleportService = game:GetService("TeleportService")
+	local placeId = game.PlaceId
+	task.spawn(function()
+		while self.Enabled do
+			pcall(function() TeleportService:Teleport(placeId, Player) end)
+			task.wait(5)
+		end
+		self._busy = false
+	end)
+end
 
 function AutoRejoin:SetEnabled(on)
 	on = on and true or false
@@ -743,12 +773,11 @@ function AutoRejoin:SetEnabled(on)
 			local overlay = coreGui:WaitForChild("RobloxPromptGui", 5)
 			overlay = overlay and overlay:WaitForChild("promptOverlay", 5)
 			if not overlay then error("prompt overlay not found") end
+			self.Enabled = true -- so _rejoin's retry loop stays alive
+			-- A disconnect prompt may already be on screen when the toggle is flipped.
+			if overlay:FindFirstChild("ErrorPrompt") then self:_rejoin() end
 			self._conn = overlay.ChildAdded:Connect(function(child)
-				if child.Name == "ErrorPrompt" then
-					pcall(function()
-						game:GetService("TeleportService"):Teleport(game.PlaceId, Player)
-					end)
-				end
+				if child.Name == "ErrorPrompt" then self:_rejoin() end
 			end)
 		end)
 		if not ok then
