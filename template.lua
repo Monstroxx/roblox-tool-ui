@@ -359,10 +359,12 @@ do
 				doneText = "Landed on place version " .. tostring(game.PlaceVersion)
 			elseif state.mode == "below" or state.mode == "above" then
 				task.wait(3) -- let players stream in before counting
-				local count = #Players:GetPlayers()
+				-- Exclude ourselves: the API's `playing` count (used to pick the server)
+				-- was taken before we joined, so verify against the same measure.
+				local count = #Players:GetPlayers() - 1
 				done = (state.mode == "below" and count < state.x)
 					or (state.mode == "above" and count > state.x)
-				doneText = ("Server has %d players"):format(count)
+				doneText = ("Server has %d other players"):format(count)
 			end
 			-- mode "loop" is never done; it hops until cancelled
 
