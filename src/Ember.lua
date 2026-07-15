@@ -213,9 +213,39 @@ local COMPAT_NAMES = {
 	"queue_on_teleport", "identifyexecutor",
 }
 
--- Capture native globals. Undefined identifiers are nil (no error); pcall guards
--- against protected globals. Also merge getgenv(), some executors only expose there.
-local NATIVE = {}
+-- Alias candidates per canonical name, in priority order:
+--   1. canonical UNC/sUNC name
+--   2. documented UNC aliases (NamingStandard api/*.md)
+--   3. legacy executor namespaces (dotted) as a last resort
+-- Names without an entry resolve by their canonical name only.
+-- RULE: consult docs.sunc.su and the UNC api/ files before adding entries — see CLAUDE.md.
+-- Do NOT copy names from individual executor docs; most of those are outdated.
+local COMPAT_ALIASES = {
+	setclipboard      = { "setclipboard", "toclipboard" },                                   -- toclipboard: UNC alias
+	queue_on_teleport = { "queue_on_teleport", "queueonteleport", "syn.queue_on_teleport" }, -- queueonteleport: UNC alias; syn.*: legacy Synapse v2
+	identifyexecutor  = { "identifyexecutor", "getexecutorname" },                           -- getexecutorname: UNC alias
+}
+
+-- Look a candidate up in an environment table. Dotted candidates ("syn.queue_on_teleport")
+-- resolve through their namespace table.
+local function lookupCandidate(env, candidate)
+	local ns, fn = candidate:match("^([%w_]+)%.([%w_]+)$")
+	local value
+	if ns then
+		local t = env[ns]
+		if type(t) == "table" then value = t[fn] end
+	else
+		value = env[candidate]
+	end
+	if type(value) == "function" then return value end
+	return nil
+end
+
+-- Capture native functions. NATIVE[name] is the resolved function; NATIVE_ALIAS[name]
+-- remembers which candidate matched when it was not the canonical name (for diagnostics).
+local NATIVE, NATIVE_ALIAS = {}, {}
+
+-- Direct identifier capture of the canonical names (pcall guards protected globals).
 pcall(function()
 	NATIVE.writefile         = writefile
 	NATIVE.readfile          = readfile
@@ -228,22 +258,38 @@ pcall(function()
 	NATIVE.gethui            = gethui
 	NATIVE.cloneref          = cloneref
 	NATIVE.queue_on_teleport = queue_on_teleport
-	NATIVE.identifyexecutor  = identifyexecutor or getexecutorname
+	NATIVE.identifyexecutor  = identifyexecutor
 end)
--- Some executors only expose queue_on_teleport under a namespace (e.g. syn.queue_on_teleport).
-pcall(function()
-	if NATIVE.queue_on_teleport == nil and type(syn) == "table" and type(syn.queue_on_teleport) == "function" then
-		NATIVE.queue_on_teleport = syn.queue_on_teleport
-	end
-end)
-pcall(function()
-	if type(getgenv) == "function" then
-		local g = getgenv()
-		for _, n in ipairs(COMPAT_NAMES) do
-			if NATIVE[n] == nil and type(g[n]) == "function" then NATIVE[n] = g[n] end
+
+-- Fill remaining gaps from an environment table, walking the alias candidates in order.
+local function resolveAliases(env)
+	if type(env) ~= "table" then return end
+	for _, name in ipairs(COMPAT_NAMES) do
+		if NATIVE[name] == nil then
+			for _, candidate in ipairs(COMPAT_ALIASES[name] or { name }) do
+				local ok, fn = pcall(lookupCandidate, env, candidate)
+				if ok and fn then
+					NATIVE[name] = fn
+					if candidate ~= name then NATIVE_ALIAS[name] = candidate end
+					break
+				end
+			end
 		end
 	end
+end
+
+-- Script env first (aliases injected as globals), then getgenv() — some executors
+-- only expose their API there.
+pcall(function() resolveAliases(getfenv(0)) end)
+pcall(function()
+	if type(getgenv) == "function" then resolveAliases(getgenv()) end
 end)
+
+-- "native" or "native (aliasname)" for status reports, so diagnostics shows which name matched.
+local function nativeSource(name)
+	local alias = NATIVE_ALIAS[name]
+	return alias and ("native (" .. alias .. ")") or "native"
+end
 
 local function setStatus(name, status, source, err)
 	Compat._status[name] = { status = status, source = source, err = err }
@@ -256,7 +302,7 @@ function Compat:Get(name)
 	local st = self._status[name]
 	if not (st and st.status == "broken") and type(NATIVE[name]) == "function" then
 		self._fns[name] = NATIVE[name]
-		if not st then setStatus(name, "present", "native") end
+		if not st then setStatus(name, "present", nativeSource(name)) end
 		return self._fns[name]
 	end
 	if self._quartz then
@@ -311,15 +357,15 @@ function Compat:FSOk()
 		self._fsOk = true
 		for _, n in ipairs(fsNames) do
 			setStatus(n, type(NATIVE[n]) == "function" and "present" or "missing",
-				type(NATIVE[n]) == "function" and "native" or "none")
+				type(NATIVE[n]) == "function" and nativeSource(n) or "none")
 		end
 		-- only these three are actually exercised by the round-trip
-		for _, n in ipairs({ "writefile", "readfile", "isfile" }) do setStatus(n, "tested", "native") end
+		for _, n in ipairs({ "writefile", "readfile", "isfile" }) do setStatus(n, "tested", nativeSource(n)) end
 	else
 		self._fsOk = false
 		for _, n in ipairs(fsNames) do
 			if type(NATIVE[n]) == "function" then
-				setStatus(n, "broken", "native", tostring(err))
+				setStatus(n, "broken", nativeSource(n), tostring(err))
 			else
 				setStatus(n, "missing", "none")
 			end
@@ -337,9 +383,9 @@ function Compat:Validate()
 		local ok, res = pcall(ident)
 		if ok and type(res) == "string" and res ~= "" then
 			Compat.Executor = res
-			setStatus("identifyexecutor", "tested", "native")
+			setStatus("identifyexecutor", "tested", nativeSource("identifyexecutor"))
 		else
-			setStatus("identifyexecutor", "broken", "native", tostring(res))
+			setStatus("identifyexecutor", "broken", nativeSource("identifyexecutor"), tostring(res))
 		end
 	else
 		setStatus("identifyexecutor", "missing", "none")
@@ -349,9 +395,9 @@ function Compat:Validate()
 	if type(NATIVE.gethui) == "function" then
 		local ok, res = pcall(NATIVE.gethui)
 		if ok and typeof(res) == "Instance" then
-			setStatus("gethui", "tested", "native")
+			setStatus("gethui", "tested", nativeSource("gethui"))
 		else
-			setStatus("gethui", "broken", "native", tostring(res))
+			setStatus("gethui", "broken", nativeSource("gethui"), tostring(res))
 		end
 	else
 		setStatus("gethui", "missing", "none")
@@ -361,9 +407,9 @@ function Compat:Validate()
 	if type(NATIVE.cloneref) == "function" then
 		local ok, res = pcall(function() return NATIVE.cloneref(game:GetService("Players")) end)
 		if ok and typeof(res) == "Instance" then
-			setStatus("cloneref", "tested", "native")
+			setStatus("cloneref", "tested", nativeSource("cloneref"))
 		else
-			setStatus("cloneref", "broken", "native", tostring(res))
+			setStatus("cloneref", "broken", nativeSource("cloneref"), tostring(res))
 		end
 	else
 		setStatus("cloneref", "missing", "none")
@@ -372,7 +418,7 @@ function Compat:Validate()
 	-- not testable without side effects: only report presence
 	for _, n in ipairs({ "setclipboard", "queue_on_teleport" }) do
 		setStatus(n, type(NATIVE[n]) == "function" and "present" or "missing",
-			type(NATIVE[n]) == "function" and "native" or "none")
+			type(NATIVE[n]) == "function" and nativeSource(n) or "none")
 	end
 
 	Compat:FSOk()
