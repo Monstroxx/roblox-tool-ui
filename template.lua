@@ -12,7 +12,7 @@
 --============================================================================--
 --  CONFIG — change these
 --============================================================================--
-local RAW_URL        = "https://raw.githubusercontent.com/USER/REPO/main"
+local RAW_URL        = "https://raw.githubusercontent.com/Monstroxx/roblox-tool-ui/main"
 local HUB_NAME       = "Ember"
 local DISCORD_INVITE = "https://discord.gg/your-invite"
 
