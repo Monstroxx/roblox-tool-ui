@@ -19,7 +19,11 @@ describe dead executors.
 
 Check in this order:
 
-1. **sUNC** — https://docs.sunc.su/ — actively maintained, tested canonical names.
+1. **sUNC** — https://docs.sunc.su/ (source: https://github.com/sUNC-Utilities/docs.sunc.su) —
+   actively maintained, tested canonical names. Only documents functions **actively tested by the
+   sUNC script**; it has diverged from the original UNC list (deprecated functions removed, new
+   ones added based on executor developer feedback), so treat it as the primary source of truth
+   over UNC when the two disagree.
 2. **UNC api/ files** — https://github.com/unified-naming-convention/NamingStandard/tree/main/api —
    archived (May 2024) but the authoritative source for **documented aliases**
    (e.g. `setclipboard` → `toclipboard`, `queue_on_teleport` → `queueonteleport`,
