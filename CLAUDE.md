@@ -40,3 +40,30 @@ Implementation rules:
 - **Quartz** (https://github.com/notpoiu/Quartz) is the sanctioned runtime polyfill for missing
   functions. It stays **opt-in** via `Ember.Compat:UseQuartz(instance)` — never auto-load remote
   code from the library.
+
+## RULE: Icons — never guess asset IDs, verify them by eye
+
+`Ember.Icons` in `src/Ember.lua` is a **curated subset (~38) of the Lucide set — there are 1500+
+more available**. Anything taking an icon (`CreateTab{ Icon = ... }`) accepts any
+`rbxassetid://`, so the table is a convenience shortlist, not a limit.
+
+Sources:
+
+1. **https://www.icons.rest/** — browse 1500+ Lucide icons mapped to Roblox asset IDs; easiest
+   way to find one by eye and copy its rbxassetid.
+2. **https://github.com/frappedevs/lucideblox** — `src/modules/util/icons.json`, a flat
+   `name → rbxassetid` map of 565 icons as **individual assets**. This is the source `Ember.Icons`
+   was built from; use it when adding entries.
+3. **https://github.com/latte-soft/lucide-roblox** — the fuller/maintained set, but it ships a
+   **spritesheet** (`ImageRectOffset`/`ImageRectSize`). Our `ImageLabel`s only set `Image`, so its
+   IDs do **not** work here without adding rect support first. Don't reach for it by default.
+
+Before adding an icon ID:
+
+- **Verify it visually — never trust the name alone and never recall an ID from memory.** Pipeline:
+  `https://thumbnails.roblox.com/v1/assets?assetIds=<ids>&size=150x150&format=Png` → download the
+  `imageUrl` → composite onto a dark background → look at it. The icons are **white on
+  transparent**, so a raw thumbnail renders white-on-white and looks blank. A labeled contact
+  sheet (System.Drawing via PowerShell) makes checking a batch quick.
+- Keys in `Ember.Icons` are **PascalCase**: Lucide names like `repeat` are Lua keywords and
+  `refresh-cw` isn't a valid identifier, so `Repeat` / `Refresh` sidestep both.

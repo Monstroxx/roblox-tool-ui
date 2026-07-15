@@ -70,7 +70,7 @@ local Window = Ember:CreateWindow({
 --============================================================================--
 --  Home
 --============================================================================--
-local Home = Window:CreateTab({ Name = "Home" })
+local Home = Window:CreateTab({ Name = "Home", Icon = Ember.Icons.Home })
 local Info = Home:AddSection({ Title = "Welcome", Open = true })
 
 Info:AddParagraph({
@@ -98,7 +98,7 @@ Info:AddButton({
 --============================================================================--
 --  Movement
 --============================================================================--
-local Move   = Window:CreateTab({ Name = "Movement" })
+local Move   = Window:CreateTab({ Name = "Movement", Icon = Ember.Icons.Move })
 local Speed  = Move:AddSection({ Title = "Speed & Jump", Open = true })
 
 Speed:AddSlider({
@@ -390,7 +390,7 @@ do
 	end
 end
 
-local Server  = Window:CreateTab({ Name = "Server" })
+local Server  = Window:CreateTab({ Name = "Server", Icon = Ember.Icons.Server })
 local HopSec  = Server:AddSection({ Title = "Server Hop", Open = true })
 
 HopSec:AddParagraph({

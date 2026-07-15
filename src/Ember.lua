@@ -114,13 +114,74 @@ local function Themed(inst, prop, key, transform)
 end
 
 --============================================================================--
+--  ICONS
+--============================================================================--
+--[[
+	Lucide icons (https://lucide.dev) as individual Roblox assets — IDs taken from
+	github.com/frappedevs/lucideblox and each one verified by eye before landing here.
+	They are plain images, NOT a spritesheet, so an ImageLabel just needs `Image`.
+
+	Tab icons are not limited to this set: `CreateTab{ Icon = "rbxassetid://..." }`
+	takes any asset. This is a curated pick — browse 1500+ more at https://www.icons.rest/
+
+	Keys are PascalCase on purpose: `repeat` is a Lua keyword, and Lucide's hyphenated
+	names ("refresh-cw") aren't valid identifiers either.
+]]
+local Icons = {
+	-- navigation / structure
+	Home       = "rbxassetid://7733960981",
+	List       = "rbxassetid://7743869612",
+	Box        = "rbxassetid://7733917120",
+	Package    = "rbxassetid://7734021469",
+	Map        = "rbxassetid://7733992829",
+	Compass    = "rbxassetid://7733924216",
+	Navigation = "rbxassetid://7734020989",
+	-- settings / tools
+	Settings   = "rbxassetid://7734053495",
+	Sliders    = "rbxassetid://7734058803",
+	Wrench     = "rbxassetid://7743878358",
+	Palette    = "rbxassetid://7734021595",
+	Bug        = "rbxassetid://7733701545",
+	Info       = "rbxassetid://7733964719",
+	-- server / network
+	Server     = "rbxassetid://7734053426",
+	Network    = "rbxassetid://7734021047",
+	Globe      = "rbxassetid://7733954760",
+	Users      = "rbxassetid://7743876054",
+	User       = "rbxassetid://7743875962",
+	Send       = "rbxassetid://7734053039",
+	Plane      = "rbxassetid://7734037723",
+	Repeat     = "rbxassetid://7734051454",
+	Refresh    = "rbxassetid://7734051052",
+	Shuffle    = "rbxassetid://7734057059",
+	-- movement / action
+	Move       = "rbxassetid://7743870731",
+	Wind       = "rbxassetid://7743878264",
+	Gauge      = "rbxassetid://7733799969",
+	Activity   = "rbxassetid://7733655755",
+	Play       = "rbxassetid://7743871480",
+	FastForward = "rbxassetid://7743867090",
+	-- misc / flair
+	Crosshair  = "rbxassetid://7733765307",
+	Eye        = "rbxassetid://7733774602",
+	Shield     = "rbxassetid://7734056608",
+	Star       = "rbxassetid://7734068321",
+	Heart      = "rbxassetid://7733956134",
+	Flame      = "rbxassetid://7733798747",
+	Skull      = "rbxassetid://7734058599",
+	Ghost      = "rbxassetid://7743868000",
+	Aperture   = "rbxassetid://7733666258",
+}
+Ember.Icons = Icons
+
+--============================================================================--
 --  ASSETS (swap freely)
 --============================================================================--
 
 local ASSETS = {
 	Ripple   = "rbxassetid://106471194043211",
 	Chevron  = "rbxassetid://125609963478878", -- rotated arrow
-	TabIcon  = "rbxassetid://7734053426",
+	TabIcon  = Icons.List, -- neutral default when CreateTab gets no Icon
 	Close    = "rbxassetid://7743878857",
 }
 
@@ -2798,7 +2859,7 @@ function Ember:CreateWindow(config)
 	function Window:CreateConfigTab(opts)
 		if type(opts) == "string" then opts = { Name = opts } end
 		opts = opts or {}
-		local tab = Window:CreateTab({ Name = opts.Name or "Settings", Icon = ASSETS.TabIcon })
+		local tab = Window:CreateTab({ Name = opts.Name or "Settings", Icon = opts.Icon or Icons.Settings })
 
 		local cfgSection = tab:AddSection({ Title = "Configuration", Open = true })
 		local nameInput = cfgSection:AddInput({ Title = "Config name", Placeholder = "my-config", Default = "" })
