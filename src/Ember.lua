@@ -177,15 +177,228 @@ local function SafeCall(fn, ...)
 	end)
 end
 
+--============================================================================--
+--  COMPAT — executor capability layer (public: Ember.Compat)
+--============================================================================--
+--[[
+	Validates the executor functions Ember relies on, instead of merely checking that
+	they exist. Public so external scripts can reuse it:
+
+		Ember.Compat:Get("writefile")   -- validated function or nil
+		Ember.Compat:Has("writefile")
+		Ember.Compat:Validate()         -- run the tests
+		Ember.Compat:Report()           -- { [name] = { status, source, err } }
+		Ember.Compat:UseQuartz(inst)    -- optionally dock github.com/notpoiu/Quartz
+		Ember.Compat.Executor           -- executor name string
+
+	Status levels are deliberately honest:
+		"tested"  real round-trip test passed
+		"present" exists, but not testable without side effects
+		"missing" not available
+		"broken"  exists, but the test failed
+]]
+
+local Compat = {}
+Compat.Executor = "Unknown"
+Compat._quartz  = nil
+Compat._status  = {}   -- name -> { status, source, err }
+Compat._fns     = {}   -- name -> resolved function
+Compat._fsTested = false
+Compat._fsOk     = false
+
+local COMPAT_NAMES = {
+	"writefile", "readfile", "isfile", "delfile",
+	"isfolder", "makefolder", "listfiles",
+	"setclipboard", "gethui", "cloneref",
+	"queue_on_teleport", "identifyexecutor",
+}
+
+-- Capture native globals. Undefined identifiers are nil (no error); pcall guards
+-- against protected globals. Also merge getgenv(), some executors only expose there.
+local NATIVE = {}
+pcall(function()
+	NATIVE.writefile         = writefile
+	NATIVE.readfile          = readfile
+	NATIVE.isfile            = isfile
+	NATIVE.delfile           = delfile
+	NATIVE.isfolder          = isfolder
+	NATIVE.makefolder        = makefolder
+	NATIVE.listfiles         = listfiles
+	NATIVE.setclipboard      = setclipboard
+	NATIVE.gethui            = gethui
+	NATIVE.cloneref          = cloneref
+	NATIVE.queue_on_teleport = queue_on_teleport
+	NATIVE.identifyexecutor  = identifyexecutor or getexecutorname
+end)
+pcall(function()
+	if type(getgenv) == "function" then
+		local g = getgenv()
+		for _, n in ipairs(COMPAT_NAMES) do
+			if NATIVE[n] == nil and type(g[n]) == "function" then NATIVE[n] = g[n] end
+		end
+	end
+end)
+
+local function setStatus(name, status, source, err)
+	Compat._status[name] = { status = status, source = source, err = err }
+end
+
+-- Resolve a function: native first, then Quartz (if docked). Cached.
+function Compat:Get(name)
+	if self._fns[name] ~= nil then return self._fns[name] end
+
+	local st = self._status[name]
+	if not (st and st.status == "broken") and type(NATIVE[name]) == "function" then
+		self._fns[name] = NATIVE[name]
+		if not st then setStatus(name, "present", "native") end
+		return self._fns[name]
+	end
+	if self._quartz then
+		local ok, fn = pcall(function() return self._quartz:GetFunction(name) end)
+		if ok and type(fn) == "function" then
+			self._fns[name] = fn
+			setStatus(name, "present", "quartz")
+			return fn
+		end
+	end
+	if not st then setStatus(name, "missing", "none") end
+	return nil
+end
+
+function Compat:Has(name)
+	return self:Get(name) ~= nil
+end
+
+-- Dock a Quartz instance (optional). Used as a fallback source in :Get.
+function Compat:UseQuartz(instance)
+	if type(instance) ~= "table" then return false, "invalid instance" end
+	self._quartz = instance
+	table.clear(self._fns) -- re-resolve with Quartz available
+	return true
+end
+
+-- Real round-trip test of the filesystem API. Lazy + cached (no startup cost).
+function Compat:FSOk()
+	if self._fsTested then return self._fsOk end
+	self._fsTested = true
+
+	local write, read, isfile_, del = NATIVE.writefile, NATIVE.readfile, NATIVE.isfile, NATIVE.delfile
+	if type(write) ~= "function" or type(read) ~= "function" or type(isfile_) ~= "function" then
+		for _, n in ipairs({ "writefile", "readfile", "isfile", "delfile", "isfolder", "makefolder", "listfiles" }) do
+			if type(NATIVE[n]) ~= "function" then setStatus(n, "missing", "none") end
+		end
+		self._fsOk = false
+		return false
+	end
+
+	local path  = "ember_compat_test.txt"
+	local token = "ember-" .. tostring(math.random(100000, 999999))
+	local ok, err = pcall(function()
+		write(path, token)
+		if not isfile_(path) then error("isfile returned false after write") end
+		if read(path) ~= token then error("readfile content mismatch") end
+	end)
+	pcall(function() if type(del) == "function" then del(path) end end)
+
+	local fsNames = { "writefile", "readfile", "isfile", "delfile", "isfolder", "makefolder", "listfiles" }
+	if ok then
+		self._fsOk = true
+		for _, n in ipairs(fsNames) do
+			setStatus(n, type(NATIVE[n]) == "function" and "present" or "missing",
+				type(NATIVE[n]) == "function" and "native" or "none")
+		end
+		-- only these three are actually exercised by the round-trip
+		for _, n in ipairs({ "writefile", "readfile", "isfile" }) do setStatus(n, "tested", "native") end
+	else
+		self._fsOk = false
+		for _, n in ipairs(fsNames) do
+			if type(NATIVE[n]) == "function" then
+				setStatus(n, "broken", "native", tostring(err))
+			else
+				setStatus(n, "missing", "none")
+			end
+		end
+		table.clear(self._fns)
+	end
+	return self._fsOk
+end
+
+-- Run all checks. Safe to call repeatedly (FS result is cached).
+function Compat:Validate()
+	-- identifyexecutor
+	local ident = NATIVE.identifyexecutor
+	if type(ident) == "function" then
+		local ok, res = pcall(ident)
+		if ok and type(res) == "string" and res ~= "" then
+			Compat.Executor = res
+			setStatus("identifyexecutor", "tested", "native")
+		else
+			setStatus("identifyexecutor", "broken", "native", tostring(res))
+		end
+	else
+		setStatus("identifyexecutor", "missing", "none")
+	end
+
+	-- gethui
+	if type(NATIVE.gethui) == "function" then
+		local ok, res = pcall(NATIVE.gethui)
+		if ok and typeof(res) == "Instance" then
+			setStatus("gethui", "tested", "native")
+		else
+			setStatus("gethui", "broken", "native", tostring(res))
+		end
+	else
+		setStatus("gethui", "missing", "none")
+	end
+
+	-- cloneref
+	if type(NATIVE.cloneref) == "function" then
+		local ok, res = pcall(function() return NATIVE.cloneref(game:GetService("Players")) end)
+		if ok and typeof(res) == "Instance" then
+			setStatus("cloneref", "tested", "native")
+		else
+			setStatus("cloneref", "broken", "native", tostring(res))
+		end
+	else
+		setStatus("cloneref", "missing", "none")
+	end
+
+	-- not testable without side effects: only report presence
+	for _, n in ipairs({ "setclipboard", "queue_on_teleport" }) do
+		setStatus(n, type(NATIVE[n]) == "function" and "present" or "missing",
+			type(NATIVE[n]) == "function" and "native" or "none")
+	end
+
+	Compat:FSOk()
+	return Compat:Report()
+end
+
+function Compat:Report()
+	local out = {}
+	for _, n in ipairs(COMPAT_NAMES) do
+		out[n] = self._status[n] or { status = "unknown", source = "none" }
+	end
+	return out
+end
+
+Ember.Compat = Compat
+pcall(function() Compat:Validate() end)
+
 -- Where to parent the ScreenGui (executor-safe with Studio fallback)
 local function GetGuiParent()
 	if RunService:IsStudio() then
 		return Player:WaitForChild("PlayerGui")
 	end
-	local ok, hui = pcall(function() return gethui() end)
-	if ok and hui then return hui end
-	local ok2, cg = pcall(function() return cloneref(game:GetService("CoreGui")) end)
-	if ok2 and cg then return cg end
+	local gethui_ = Compat:Get("gethui")
+	if gethui_ then
+		local ok, hui = pcall(gethui_)
+		if ok and typeof(hui) == "Instance" then return hui end
+	end
+	local cloneref_ = Compat:Get("cloneref")
+	if cloneref_ then
+		local ok, cg = pcall(function() return cloneref_(game:GetService("CoreGui")) end)
+		if ok and typeof(cg) == "Instance" then return cg end
+	end
 	return game:GetService("CoreGui")
 end
 
@@ -306,48 +519,26 @@ Maid.Destroy = Maid.Clean
 --  CONFIG / SAVE MANAGER
 --============================================================================--
 
--- Grab native executor globals directly (undefined identifiers are nil, not errors).
--- Wrapped in pcall in case any is a protected global.
-local NATIVE = {}
-pcall(function()
-	NATIVE.writefile    = writefile
-	NATIVE.readfile     = readfile
-	NATIVE.isfile       = isfile
-	NATIVE.delfile      = delfile
-	NATIVE.isfolder     = isfolder
-	NATIVE.makefolder   = makefolder
-	NATIVE.listfiles    = listfiles
-	NATIVE.setclipboard = setclipboard
-end)
--- Also merge from getgenv() if available (some executors expose them only there)
-pcall(function()
-	if type(getgenv) == "function" then
-		local g = getgenv()
-		for _, name in ipairs({ "writefile", "readfile", "isfile", "delfile", "isfolder", "makefolder", "listfiles", "setclipboard" }) do
-			if type(g[name]) == "function" and NATIVE[name] == nil then NATIVE[name] = g[name] end
-		end
-	end
-end)
-
--- Resolve file-system functions (nil in Studio -> in-memory fallback)
-local fs = {
-	write      = NATIVE.writefile,
-	read       = NATIVE.readfile,
-	isfile     = NATIVE.isfile,
-	delfile    = NATIVE.delfile,
-	isfolder   = NATIVE.isfolder,
-	makefolder = NATIVE.makefolder,
-	listfiles  = NATIVE.listfiles,
-}
-local hasFS = type(fs.write) == "function" and type(fs.read) == "function" and type(fs.isfile) == "function"
-local hasClipboard = type(NATIVE.setclipboard) == "function" and NATIVE.setclipboard or nil
+-- File access goes through Compat: the functions are round-trip tested, so a broken
+-- writefile degrades to in-memory instead of silently failing.
+local fs = setmetatable({}, {
+	__index = function(_, key)
+		local map = {
+			write = "writefile", read = "readfile", isfile = "isfile", delfile = "delfile",
+			isfolder = "isfolder", makefolder = "makefolder", listfiles = "listfiles",
+		}
+		return Compat:Get(map[key] or key)
+	end,
+})
+local function hasFS() return Compat:FSOk() end
+local function getClipboard() return Compat:Get("setclipboard") end
 
 local SaveManager = {}
 SaveManager.Folder  = "Ember"
 SaveManager._memory = {}   -- name -> json (Studio / no-FS fallback)
 
 local function ensureFolders()
-	if not hasFS or not fs.makefolder then return end
+	if not hasFS() or not fs.makefolder then return end
 	for _, p in ipairs({ SaveManager.Folder, SaveManager.Folder .. "/configs", SaveManager.Folder .. "/themes" }) do
 		pcall(function()
 			if not (fs.isfolder and fs.isfolder(p)) then fs.makefolder(p) end
@@ -380,7 +571,7 @@ function SaveManager:Save(name)
 		data[flag] = encodeValue(element.Value)
 	end
 	local json = HttpService:JSONEncode(data)
-	if hasFS then
+	if hasFS() then
 		ensureFolders()
 		local ok, err = pcall(fs.write, self.Folder .. "/configs/" .. name .. ".json", json)
 		if not ok then return false, err end
@@ -393,7 +584,7 @@ end
 function SaveManager:Load(name)
 	if not name or name == "" then return false, "invalid name" end
 	local json
-	if hasFS then
+	if hasFS() then
 		local path = self.Folder .. "/configs/" .. name .. ".json"
 		if not (fs.isfile and fs.isfile(path)) then return false, "not found" end
 		local ok, res = pcall(fs.read, path)
@@ -415,7 +606,7 @@ function SaveManager:Load(name)
 end
 
 function SaveManager:Delete(name)
-	if hasFS then
+	if hasFS() then
 		local path = self.Folder .. "/configs/" .. name .. ".json"
 		if fs.isfile and fs.isfile(path) and fs.delfile then
 			pcall(fs.delfile, path)
@@ -430,7 +621,7 @@ end
 
 function SaveManager:List()
 	local names = {}
-	if hasFS and fs.listfiles then
+	if hasFS() and fs.listfiles then
 		local ok, files = pcall(fs.listfiles, self.Folder .. "/configs")
 		if ok and files then
 			for _, f in ipairs(files) do
@@ -446,7 +637,7 @@ function SaveManager:List()
 end
 
 function SaveManager:SetAutoload(name)
-	if hasFS then
+	if hasFS() then
 		ensureFolders()
 		pcall(fs.write, self.Folder .. "/configs/autoload.txt", tostring(name))
 	else
@@ -455,7 +646,7 @@ function SaveManager:SetAutoload(name)
 end
 
 function SaveManager:GetAutoload()
-	if hasFS then
+	if hasFS() then
 		local path = self.Folder .. "/configs/autoload.txt"
 		if fs.isfile and fs.isfile(path) then
 			local ok, res = pcall(fs.read, path)
@@ -474,6 +665,104 @@ function SaveManager:LoadAutoload()
 end
 
 Ember.SaveManager = SaveManager
+
+--============================================================================--
+--  SESSION EXTRAS (opt-in; not shown in the UI unless CreateConfigTab enables them)
+--============================================================================--
+
+--// Anti-AFK — defeats the ~20 minute idle kick.
+local AntiAFK = { Enabled = false, _conn = nil }
+
+function AntiAFK:SetEnabled(on)
+	on = on and true or false
+	if on == self.Enabled then return self.Enabled end
+	if on then
+		self._conn = Player.Idled:Connect(function()
+			pcall(function()
+				VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+				task.wait(1)
+				VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+			end)
+		end)
+	elseif self._conn then
+		self._conn:Disconnect()
+		self._conn = nil
+	end
+	self.Enabled = on
+	return self.Enabled
+end
+function AntiAFK:Enable()  return self:SetEnabled(true) end
+function AntiAFK:Disable() return self:SetEnabled(false) end
+Ember.AntiAFK = AntiAFK
+
+--// Auto-Execute — re-run the script after a teleport / server hop.
+-- Needs `queue_on_teleport`, which cannot be tested without an actual teleport.
+local AutoExecute = { Enabled = false, Code = nil }
+
+function AutoExecute:Configure(cfg)
+	cfg = cfg or {}
+	self.Code = cfg.Code or self.Code
+	return self.Code ~= nil
+end
+
+function AutoExecute:SetEnabled(on)
+	on = on and true or false
+	local queue = Compat:Get("queue_on_teleport")
+	if on then
+		if not queue then
+			self.Enabled = false
+			return false, "unsupported"
+		end
+		if not self.Code or self.Code == "" then
+			self.Enabled = false
+			return false, "no code configured (call Ember.AutoExecute:Configure{ Code = ... })"
+		end
+		local ok, err = pcall(queue, self.Code)
+		if not ok then
+			self.Enabled = false
+			return false, tostring(err)
+		end
+	else
+		-- queue_on_teleport has no "unqueue"; an empty queue is the standard reset.
+		if queue then pcall(queue, "") end
+	end
+	self.Enabled = on
+	return on
+end
+Ember.AutoExecute = AutoExecute
+
+--// Auto-Rejoin — rejoin the place when Roblox shows a disconnect/error prompt.
+local AutoRejoin = { Enabled = false, _conn = nil }
+
+function AutoRejoin:SetEnabled(on)
+	on = on and true or false
+	if on == self.Enabled then return self.Enabled end
+	if on then
+		local ok = pcall(function()
+			local coreGui = game:GetService("CoreGui")
+			local overlay = coreGui:WaitForChild("RobloxPromptGui", 5)
+			overlay = overlay and overlay:WaitForChild("promptOverlay", 5)
+			if not overlay then error("prompt overlay not found") end
+			self._conn = overlay.ChildAdded:Connect(function(child)
+				if child.Name == "ErrorPrompt" then
+					pcall(function()
+						game:GetService("TeleportService"):Teleport(game.PlaceId, Player)
+					end)
+				end
+			end)
+		end)
+		if not ok then
+			self.Enabled = false
+			return false, "unsupported"
+		end
+	elseif self._conn then
+		self._conn:Disconnect()
+		self._conn = nil
+	end
+	self.Enabled = on
+	return on
+end
+Ember.AutoRejoin = AutoRejoin
 
 --============================================================================--
 --  THEME serialization + SetTheme
@@ -533,11 +822,12 @@ end
 
 function SaveManager:ExportTheme()
 	local json = HttpService:JSONEncode(serializeTheme(Theme))
-	if hasFS then
+	if hasFS() then
 		ensureFolders()
 		pcall(fs.write, self.Folder .. "/themes/" .. tostring(Theme.Name or "theme") .. ".json", json)
 	end
-	if hasClipboard then pcall(hasClipboard, json) end
+	local clip = getClipboard()
+	if clip then pcall(clip, json) end
 	return json
 end
 
@@ -1178,14 +1468,9 @@ function Ember:CreateWindow(config)
 		end
 	end))
 
-	-- anti-AFK
-	if antiAFK then
-		wmaid:Give(Player.Idled:Connect(function()
-			VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
-			task.wait(1)
-			VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
-		end))
-	end
+	-- anti-AFK (module-level now; window config is just a convenience default)
+	Ember.AntiAFK:SetEnabled(antiAFK)
+	wmaid:Give(function() Ember.AntiAFK:Disable() end)
 
 	--// Shared slider drag state (ONE listener for all sliders, not one-per-slider)
 	local activeSlider = nil   -- { update = function(x) end }
@@ -2291,9 +2576,14 @@ function Ember:CreateWindow(config)
 		end
 	end
 
-	-- Built-in Settings tab: config manager + theme switcher
-	function Window:CreateConfigTab(tabName)
-		local tab = Window:CreateTab({ Name = tabName or "Settings", Icon = ASSETS.TabIcon })
+	-- Built-in Settings tab: config manager + theme switcher.
+	-- Accepts a name string (legacy) or an options table:
+	--   { Name, AntiAFK, AutoExecute, AutoRejoin, Diagnostics }
+	-- The session/diagnostics sections are opt-in and hidden unless requested.
+	function Window:CreateConfigTab(opts)
+		if type(opts) == "string" then opts = { Name = opts } end
+		opts = opts or {}
+		local tab = Window:CreateTab({ Name = opts.Name or "Settings", Icon = ASSETS.TabIcon })
 
 		local cfgSection = tab:AddSection({ Title = "Configuration", Open = true })
 		local nameInput = cfgSection:AddInput({ Title = "Config name", Placeholder = "my-config", Default = "" })
@@ -2343,8 +2633,87 @@ function Ember:CreateWindow(config)
 		})
 		themeSection:AddButton({ Title = "Export theme", Content = "Copy current theme JSON to clipboard", Callback = function()
 			SaveManager:ExportTheme()
-			Ember:Notify({ Title = "Theme", Description = "Exported", Content = hasClipboard and "Copied to clipboard" or "Saved to file", Type = "Success" })
+			Ember:Notify({ Title = "Theme", Description = "Exported", Content = getClipboard() and "Copied to clipboard" or "Saved to file", Type = "Success" })
 		end })
+
+		--// Session section (opt-in)
+		if opts.AntiAFK or opts.AutoExecute or opts.AutoRejoin then
+			local session = tab:AddSection({ Title = "Session", Open = true })
+
+			if opts.AntiAFK then
+				session:AddToggle({
+					Title = "Anti-AFK", Content = "Prevents the idle kick",
+					Default = Ember.AntiAFK.Enabled, Flag = "ember_antiafk",
+					Callback = function(v) Ember.AntiAFK:SetEnabled(v) end,
+				})
+			end
+
+			if opts.AutoExecute then
+				local autoExecToggle
+				autoExecToggle = session:AddToggle({
+					Title = "Auto execute", Content = "Re-run the script after a teleport",
+					Default = Ember.AutoExecute.Enabled, Flag = "ember_autoexec",
+					Callback = function(v)
+						local ok, err = Ember.AutoExecute:SetEnabled(v)
+						if v and not ok then
+							Ember:Notify({
+								Title = "Auto execute", Description = "Unavailable",
+								Content = tostring(err), Type = "Warning",
+							})
+							-- reflect the real state back into the UI
+							if autoExecToggle then task.defer(function() autoExecToggle:Set(false) end) end
+						end
+					end,
+				})
+			end
+
+			if opts.AutoRejoin then
+				local rejoinToggle
+				rejoinToggle = session:AddToggle({
+					Title = "Auto rejoin", Content = "Rejoin automatically when disconnected",
+					Default = Ember.AutoRejoin.Enabled, Flag = "ember_autorejoin",
+					Callback = function(v)
+						local ok, err = Ember.AutoRejoin:SetEnabled(v)
+						if v and not ok then
+							Ember:Notify({
+								Title = "Auto rejoin", Description = "Unavailable",
+								Content = tostring(err), Type = "Warning",
+							})
+							if rejoinToggle then task.defer(function() rejoinToggle:Set(false) end) end
+						end
+					end,
+				})
+			end
+		end
+
+		--// Diagnostics section (opt-in) — makes silent fallbacks visible
+		if opts.Diagnostics then
+			local diag = tab:AddSection({ Title = "Diagnostics", Open = false })
+			-- non-empty content on creation: AddParagraph only builds the content label
+			-- when there is text, and :Set can't create it afterwards
+			local para = diag:AddParagraph({ Title = "Executor", Content = "..." })
+
+			local function refreshDiag()
+				Compat:Validate()
+				local report = Compat:Report()
+				local names = {}
+				for n in pairs(report) do table.insert(names, n) end
+				table.sort(names)
+				local lines = {}
+				for _, n in ipairs(names) do
+					local e = report[n]
+					table.insert(lines, string.format("%s: %s%s", n, e.status,
+						e.source and e.source ~= "none" and (" (" .. e.source .. ")") or ""))
+				end
+				para:Set({
+					Title   = "Executor: " .. tostring(Compat.Executor),
+					Content = table.concat(lines, "\n"),
+				})
+			end
+
+			refreshDiag()
+			diag:AddButton({ Title = "Refresh", Content = "Re-run capability checks", Callback = refreshDiag })
+		end
 
 		return tab
 	end

@@ -166,15 +166,78 @@ table at the top of [`src/Ember.lua`](src/Ember.lua), or ship your own theme JSO
 
 ---
 
+## Executor compatibility (`Ember.Compat`)
+
+Ember **validates** the executor functions it uses instead of just checking they exist —
+a `writefile` that is present but broken degrades to in-memory instead of failing silently.
+The layer is public, so your own scripts can reuse it.
+
+```lua
+Ember.Compat:Get("writefile")   -- validated function, or nil
+Ember.Compat:Has("setclipboard")
+Ember.Compat:Validate()         -- (re-)run the checks
+Ember.Compat:Report()           -- { [name] = { status, source, err } }
+Ember.Compat.Executor           -- e.g. "Swift", or "Unknown"
+```
+
+Status levels are deliberately honest:
+
+| Status | Meaning |
+|---|---|
+| `tested` | real round-trip test passed (filesystem write→read→compare, `gethui`, `cloneref`) |
+| `present` | exists, but not testable without side effects (`setclipboard`, `queue_on_teleport`) |
+| `missing` | not available (e.g. everything in Studio) |
+| `broken` | exists, but the test failed → Ember falls back automatically |
+
+**Optional [Quartz](https://github.com/notpoiu/Quartz) docking** — Ember has no network
+dependency by default, but you can hand it a Quartz instance as an extra fallback source:
+
+```lua
+local Quartz = loadstring(game:HttpGetAsync("https://github.com/notpoiu/Quartz/releases/latest/download/Quartz.luau"))()
+Ember.Compat:UseQuartz(Quartz.new())
+```
+
+## Session extras (opt-in)
+
+These live in the library but are **not shown in the UI** unless you enable them in
+`CreateConfigTab`.
+
+```lua
+Ember.AntiAFK:SetEnabled(true)      -- defeats the idle kick (on by default via window config)
+Ember.AutoExecute:Configure({ Code = 'loadstring(game:HttpGet(URL))()' })
+Ember.AutoExecute:SetEnabled(true)  -- re-runs the script after a teleport (queue_on_teleport)
+Ember.AutoRejoin:SetEnabled(true)   -- rejoins on disconnect
+```
+
+`SetEnabled` returns `false, reason` when the executor lacks support — nothing throws.
+
+## Settings tab
+
+```lua
+Window:CreateConfigTab({
+    Name = "Settings",
+    AntiAFK = true, AutoExecute = true, AutoRejoin = true, Diagnostics = true,
+})
+```
+
+Config + theme sections are always included. `AntiAFK` / `AutoExecute` / `AutoRejoin` add a
+**Session** section with toggles (saved via flags); `Diagnostics` adds a live
+`Ember.Compat:Report()` view with a refresh button. `CreateConfigTab("Settings")` (plain
+string) still works.
+
 ## Files
 
 - [`src/Ember.lua`](src/Ember.lua) — the library (single file).
-- [`example.lua`](example.lua) — demo / verification script.
+- [`template.lua`](template.lua) — **universal hub starter**: Home + Discord invite,
+  walkspeed / infinite jump / gravity / fly, and a full Settings tab. Copy it and add your
+  own tabs. Game cheats live here, not in the library.
+- [`example.lua`](example.lua) — element demo / verification script.
 - `template/` — original reference template (not used at runtime).
 
 ## Notes
 
 - Requires an executor for file-based config persistence and `gethui()`/`cloneref` GUI
-  parenting; in Studio it parents to `PlayerGui` and uses in-memory config.
+  parenting; in Studio it parents to `PlayerGui` and uses in-memory config. Nothing errors
+  either way — check `Ember.Compat:Report()` to see what is actually available.
 - All global input connections are tracked by a Maid and disconnected on
   `Window:Destroy()` — no lingering listeners after unload.
